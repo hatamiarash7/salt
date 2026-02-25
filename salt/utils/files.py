@@ -580,7 +580,8 @@ def is_fcntl_available(check_sunos=False):
     Simple function to check if the ``fcntl`` module is available or not.
 
     If ``check_sunos`` is passed as ``True`` an additional check to see if host is
-    SunOS is also made. For additional information see: http://goo.gl/159FF8
+    SunOS is also made. For additional information see:
+    https://github.com/saltstack/salt/commit/bed877f8bd5c
     """
     if check_sunos and salt.utils.platform.is_sunos():
         return False
@@ -648,10 +649,6 @@ def is_text(fp_, blocksize=512):
     are NUL ('\x00') bytes in the block, assume this is a binary file.
     """
 
-    def int2byte(x):
-        return bytes((x,))
-
-    text_characters = b"".join(int2byte(i) for i in range(32, 127)) + b"\n\r\t\f\b"
     try:
         block = fp_.read(blocksize)
     except AttributeError:
@@ -663,20 +660,7 @@ def is_text(fp_, blocksize=512):
         except OSError:
             # Unable to open file, bail out and return false
             return False
-    if b"\x00" in block:
-        # Files with null bytes are binary
-        return False
-    elif not block:
-        # An empty file is considered a valid text file
-        return True
-    try:
-        block.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        pass
-
-    nontext = block.translate(None, text_characters)
-    return float(len(nontext)) / len(block) <= 0.30
+    return not salt.utils.stringutils.is_binary(block)
 
 
 @jinja_filter("is_bin_file")
@@ -689,12 +673,8 @@ def is_binary(path):
         return False
     try:
         with fopen(path, "rb") as fp_:
-            try:
-                data = fp_.read(2048)
-                data = data.decode(__salt_system_encoding__)
-                return salt.utils.stringutils.is_binary(data)
-            except UnicodeDecodeError:
-                return True
+            data = fp_.read(2048)
+            return salt.utils.stringutils.is_binary(data)
     except OSError:
         return False
 

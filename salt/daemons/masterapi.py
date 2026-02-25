@@ -56,6 +56,27 @@ log = logging.getLogger(__name__)
 # Things to do in lower layers:
 # only accept valid minion ids
 
+MINION_EVENT_BLACKLIST = (
+    "salt/job/*/publish",
+    "salt/job/*/new",
+    "salt/job/*/return",
+    "salt/key",
+    "salt/cloud/*",
+    "salt/run/*",
+    "salt/cluster/*",
+    "salt/wheel/*/new",
+    "salt/wheel/*/return",
+    "salt/run/*",
+    "salt/cloud/*",
+)
+
+
+def valid_minion_tag(tag, blacklist=MINION_EVENT_BLACKLIST):
+    for black in blacklist:
+        if fnmatch.fnmatch(tag, black):
+            return False
+    return True
+
 
 def init_git_pillar(opts):
     """
@@ -603,7 +624,7 @@ class RemoteFuncs:
         minions = _res["minions"]
         minion_side_acl = {}  # Cache minion-side ACL
         for minion in minions:
-            mine_data = self.cache.fetch(f"minions/{minion}", "mine")
+            mine_data = self.cache.fetch("mine", minion)
             if not isinstance(mine_data, dict):
                 continue
             for function in functions_allowed:
@@ -654,8 +675,8 @@ class RemoteFuncs:
         if self.opts.get("minion_data_cache", False) or self.opts.get(
             "enforce_mine_cache", False
         ):
-            cbank = "minions/{}".format(load["id"])
-            ckey = "mine"
+            ckey = load["id"]
+            cbank = "mine"
             new_data = load["data"]
             if not load.get("clear", False):
                 data = self.cache.fetch(cbank, ckey)
@@ -673,8 +694,8 @@ class RemoteFuncs:
         if self.opts.get("minion_data_cache", False) or self.opts.get(
             "enforce_mine_cache", False
         ):
-            cbank = "minions/{}".format(load["id"])
-            ckey = "mine"
+            cbank = "mine"
+            ckey = load["id"]
             try:
                 data = self.cache.fetch(cbank, ckey)
                 if not isinstance(data, dict):
@@ -695,7 +716,7 @@ class RemoteFuncs:
         if self.opts.get("minion_data_cache", False) or self.opts.get(
             "enforce_mine_cache", False
         ):
-            return self.cache.flush("minions/{}".format(load["id"]), "mine")
+            return self.cache.flush("mine", load["id"])
         return True
 
     def _file_recv(self, load):
@@ -768,11 +789,7 @@ class RemoteFuncs:
         )
         data = pillar.compile_pillar()
         if self.opts.get("minion_data_cache", False):
-            self.cache.store(
-                "minions/{}".format(load["id"]),
-                "data",
-                {"grains": load["grains"], "pillar": data},
-            )
+            self.cache.store("grains", load["id"], load["grains"])
             if self.opts.get("minion_data_cache_events") is True:
                 self.event.fire_event(
                     {"comment": "Minion data cache refresh"},
@@ -795,12 +812,19 @@ class RemoteFuncs:
                     event_data = event["data"]
                 else:
                     event_data = event
-                self.event.fire_event(event_data, event["tag"])  # old dup event
+                # Fire pretagged event first (for syndics) before blacklist check
+                # This allows syndics to forward events like salt/job/*/new with
+                # the syndic/ prefix, bypassing the minion event blacklist
                 if load.get("pretag") is not None:
                     self.event.fire_event(
                         event_data,
                         salt.utils.event.tagify(event["tag"], base=load["pretag"]),
                     )
+                # Check blacklist for original tag
+                if not valid_minion_tag(event["tag"]):
+                    log.warning("Filtering blacklisted event tag %s", event["tag"])
+                    continue
+                self.event.fire_event(event_data, event["tag"])  # old dup event
         else:
             tag = load["tag"]
             self.event.fire_event(load, tag)

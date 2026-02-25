@@ -57,7 +57,7 @@ def get_test_list_language_csv():
 @pytest.fixture
 def get_test_privileges_list_table_csv():
     return """name
-"{baruwatest=arwdDxt/baruwatest,bayestest=arwd/baruwatest,baruwa=a*r*w*d*D*x*t*/baruwatest}"
+"{baruwatest=arwdDxtm/baruwatest,bayestest=arwd/baruwatest,baruwa=a*r*w*d*D*x*t*m*/baruwatest}"
 """
 
 
@@ -1624,6 +1624,7 @@ def test_privileges_list_table(get_test_privileges_list_table_csv):
                 "REFERENCES": True,
                 "SELECT": True,
                 "DELETE": True,
+                "MAINTAIN": True,
             },
             "baruwatest": {
                 "INSERT": False,
@@ -1633,6 +1634,7 @@ def test_privileges_list_table(get_test_privileges_list_table_csv):
                 "REFERENCES": False,
                 "SELECT": False,
                 "DELETE": False,
+                "MAINTAIN": False,
             },
         }
         assert ret == expected
@@ -2005,6 +2007,147 @@ def test_privileges_grant_table():
         )
 
 
+def test_privileges_grant_function():
+    """
+    Test granting privileges on function
+    """
+    with patch(
+        "salt.modules.postgres._run_psql", Mock(return_value={"retcode": 0})
+    ), patch("salt.utils.path.which", MagicMock(return_value="/usr/bin/pgsql")):
+        with patch("salt.modules.postgres.has_privileges", Mock(return_value=False)):
+            ret = postgres.privileges_grant(
+                "baruwa",
+                "fawl",
+                "function",
+                "ALL",
+                grant_option=True,
+                maintenance_db="db_name",
+                runas="user",
+                host="testhost",
+                port="testport",
+                user="testuser",
+                password="testpassword",
+            )
+
+            query = 'GRANT ALL ON FUNCTION public."fawl" TO "baruwa" WITH GRANT OPTION'
+
+            postgres._run_psql.assert_called_once_with(
+                [
+                    "/usr/bin/pgsql",
+                    "--no-align",
+                    "--no-readline",
+                    "--no-psqlrc",
+                    "--no-password",
+                    "--username",
+                    "testuser",
+                    "--host",
+                    "testhost",
+                    "--port",
+                    "testport",
+                    "--dbname",
+                    "db_name",
+                    "-c",
+                    query,
+                ],
+                host="testhost",
+                port="testport",
+                password="testpassword",
+                user="testuser",
+                runas="user",
+            )
+
+    with patch(
+        "salt.modules.postgres._run_psql", Mock(return_value={"retcode": 0})
+    ), patch("salt.utils.path.which", MagicMock(return_value="/usr/bin/pgsql")), patch(
+        "salt.modules.postgres.has_privileges", Mock(return_value=False)
+    ):
+        ret = postgres.privileges_grant(
+            "baruwa",
+            "fawl",
+            "function",
+            "ALL",
+            maintenance_db="db_name",
+            runas="user",
+            host="testhost",
+            port="testport",
+            user="testuser",
+            password="testpassword",
+        )
+
+        query = 'GRANT ALL ON FUNCTION public."fawl" TO "baruwa"'
+
+        postgres._run_psql.assert_called_once_with(
+            [
+                "/usr/bin/pgsql",
+                "--no-align",
+                "--no-readline",
+                "--no-psqlrc",
+                "--no-password",
+                "--username",
+                "testuser",
+                "--host",
+                "testhost",
+                "--port",
+                "testport",
+                "--dbname",
+                "db_name",
+                "-c",
+                query,
+            ],
+            host="testhost",
+            port="testport",
+            password="testpassword",
+            user="testuser",
+            runas="user",
+        )
+
+    # Test grant on all functions
+    with patch(
+        "salt.modules.postgres._run_psql", Mock(return_value={"retcode": 0})
+    ), patch("salt.utils.path.which", MagicMock(return_value="/usr/bin/pgsql")), patch(
+        "salt.modules.postgres.has_privileges", Mock(return_value=False)
+    ):
+        ret = postgres.privileges_grant(
+            "baruwa",
+            "ALL",
+            "function",
+            "EXECUTE",
+            maintenance_db="db_name",
+            runas="user",
+            host="testhost",
+            port="testport",
+            user="testuser",
+            password="testpassword",
+        )
+
+        query = 'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "baruwa"'
+
+        postgres._run_psql.assert_called_once_with(
+            [
+                "/usr/bin/pgsql",
+                "--no-align",
+                "--no-readline",
+                "--no-psqlrc",
+                "--no-password",
+                "--username",
+                "testuser",
+                "--host",
+                "testhost",
+                "--port",
+                "testport",
+                "--dbname",
+                "db_name",
+                "-c",
+                query,
+            ],
+            host="testhost",
+            port="testport",
+            password="testpassword",
+            user="testuser",
+            runas="user",
+        )
+
+
 def test_privileges_grant_group():
     """
     Test granting privileges on group
@@ -2121,7 +2264,57 @@ def test_privileges_revoke_table():
             password="testpassword",
         )
 
-        query = "REVOKE ALL ON TABLE public.awl FROM baruwa"
+        query = 'REVOKE ALL ON TABLE public."awl" FROM baruwa'
+
+        postgres._run_psql.assert_called_once_with(
+            [
+                "/usr/bin/pgsql",
+                "--no-align",
+                "--no-readline",
+                "--no-psqlrc",
+                "--no-password",
+                "--username",
+                "testuser",
+                "--host",
+                "testhost",
+                "--port",
+                "testport",
+                "--dbname",
+                "db_name",
+                "-c",
+                query,
+            ],
+            host="testhost",
+            port="testport",
+            password="testpassword",
+            user="testuser",
+            runas="user",
+        )
+
+
+def test_privileges_revoke_function():
+    """
+    Test revoking privileges on function
+    """
+    with patch(
+        "salt.modules.postgres._run_psql", Mock(return_value={"retcode": 0})
+    ), patch("salt.utils.path.which", MagicMock(return_value="/usr/bin/pgsql")), patch(
+        "salt.modules.postgres.has_privileges", Mock(return_value=True)
+    ):
+        ret = postgres.privileges_revoke(
+            "baruwa",
+            "f-awl",
+            "function",
+            "EXECUTE",
+            maintenance_db="db_name",
+            runas="user",
+            host="testhost",
+            port="testport",
+            user="testuser",
+            password="testpassword",
+        )
+
+        query = 'REVOKE EXECUTE ON FUNCTION public."f-awl" FROM baruwa'
 
         postgres._run_psql.assert_called_once_with(
             [

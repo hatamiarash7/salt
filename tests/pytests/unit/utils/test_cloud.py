@@ -551,11 +551,10 @@ def test_winrm_pinnned_version():
         except ImportError:
             raise pytest.skip('The "winrm" python module is not installed in this env.')
         else:
-            import pkg_resources
+            from importlib.metadata import version
 
-            winrm_pkg = pkg_resources.get_distribution("pywinrm")
-            assert winrm_pkg.version >= "0.3.0"
-    # fmt: on
+            winrm_version = version("pywinrm")
+            assert winrm_version >= "0.3.0"
 
 
 def test_ssh_gateway_arguments_default_alive_args():
@@ -578,6 +577,11 @@ def test_ssh_gateway_arguments_alive_args():
     )
     assert f"-oServerAliveInterval={server_alive_interval}" in arguments
     assert f"-oServerAliveCountMax={server_alive_count_max}" in arguments
+
+
+def test_ssh_gateway_arguments_contains_proxy_command():
+    arguments = ssh_gateway_arguments({"ssh_gateway": "host"})
+    assert "-oProxyCommand=" in arguments
 
 
 def test_wait_for_port_default_alive_args():

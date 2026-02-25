@@ -4,24 +4,24 @@ Render the pillar data
 
 import collections
 import copy
+import datetime
 import fnmatch
 import logging
-import os
 import sys
 import time
 import traceback
+from collections import OrderedDict
 
-import tornado.gen
-
+import salt.cache
 import salt.channel.client
 import salt.fileclient
 import salt.loader
 import salt.minion
 import salt.utils.args
-import salt.utils.cache
 import salt.utils.crypt
 import salt.utils.data
 import salt.utils.dictupdate
+import salt.utils.master
 import salt.utils.url
 from salt.exceptions import SaltClientError
 from salt.template import compile_template
@@ -30,7 +30,6 @@ from salt.template import compile_template
 # causes an UnboundLocalError. This should be investigated and fixed, but until
 # then, leave the import directly below this comment intact.
 from salt.utils.dictupdate import merge
-from salt.utils.odict import OrderedDict
 from salt.version import __version__
 
 log = logging.getLogger(__name__)
@@ -69,8 +68,7 @@ def get_pillar(
 
     ptype = {"remote": RemotePillar, "local": Pillar}.get(file_client, Pillar)
     # If local pillar and we're caching, run through the cache system first
-    log.debug("Determining pillar cache")
-    if opts["pillar_cache"]:
+    if opts.get("pillar_cache") or opts.get("minion_data_cache"):
         log.debug("get_pillar using pillar cache with ext: %s", ext)
         return PillarCache(
             opts,
@@ -197,6 +195,15 @@ class RemotePillarMixin:
         log.trace("ext_pillar_extra_data = %s", extra_data)
         return extra_data
 
+    def validate_return(self, data):
+        if not isinstance(data, dict):
+            msg = "Got a bad pillar from master, type {}, expecting dict: {}".format(
+                type(data).__name__, data
+            )
+            log.error(msg)
+            # raise an exception! Pillar isn't empty, we can't sync it!
+            raise SaltClientError(msg)
+
 
 class AsyncRemotePillar(RemotePillarMixin):
     """
@@ -241,8 +248,7 @@ class AsyncRemotePillar(RemotePillarMixin):
         self._closing = False
         self.clean_cache = clean_cache
 
-    @tornado.gen.coroutine
-    def compile_pillar(self):
+    async def compile_pillar(self):
         """
         Return a future which will contain the pillar data from the master
         """
@@ -262,7 +268,7 @@ class AsyncRemotePillar(RemotePillarMixin):
             load["ext"] = self.ext
         start = time.monotonic()
         try:
-            ret_pillar = yield self.channel.crypted_transfer_decode_dictentry(
+            ret_pillar = await self.channel.crypted_transfer_decode_dictentry(
                 load,
                 dictkey="pillar",
             )
@@ -276,15 +282,8 @@ class AsyncRemotePillar(RemotePillarMixin):
         except Exception:  # pylint: disable=broad-except
             log.exception("Exception getting pillar:")
             raise SaltClientError("Exception getting pillar.")
-
-        if not isinstance(ret_pillar, dict):
-            msg = "Got a bad pillar from master, type {}, expecting dict: {}".format(
-                type(ret_pillar).__name__, ret_pillar
-            )
-            log.error(msg)
-            # raise an exception! Pillar isn't empty, we can't sync it!
-            raise SaltClientError(msg)
-        raise tornado.gen.Return(ret_pillar)
+        self.validate_return(ret_pillar)
+        return ret_pillar
 
     def destroy(self):
         if self._closing:
@@ -374,14 +373,7 @@ class RemotePillar(RemotePillarMixin):
         except Exception:  # pylint: disable=broad-except
             log.exception("Exception getting pillar:")
             raise SaltClientError("Exception getting pillar.")
-
-        if not isinstance(ret_pillar, dict):
-            log.error(
-                "Got a bad pillar from master, type %s, expecting dict: %s",
-                type(ret_pillar).__name__,
-                ret_pillar,
-            )
-            return {}
+        self.validate_return(ret_pillar)
         return ret_pillar
 
     def destroy(self):
@@ -396,144 +388,6 @@ class RemotePillar(RemotePillarMixin):
         self.destroy()
 
     # pylint: enable=W1701
-
-
-class PillarCache:
-    """
-    Return a cached pillar if it exists, otherwise cache it.
-
-    Pillar caches are structed in two diminensions: minion_id with a dict of
-    saltenvs. Each saltenv contains a pillar dict
-
-    Example data structure:
-
-    ```
-    {'minion_1':
-        {'base': {'pilar_key_1' 'pillar_val_1'}
-    }
-    """
-
-    # TODO ABC?
-    def __init__(
-        self,
-        opts,
-        grains,
-        minion_id,
-        saltenv,
-        ext=None,
-        functions=None,
-        pillar_override=None,
-        pillarenv=None,
-        extra_minion_data=None,
-        clean_cache=False,
-    ):
-        # Yes, we need all of these because we need to route to the Pillar object
-        # if we have no cache. This is another refactor target.
-
-        # Go ahead and assign these because they may be needed later
-        self.opts = opts
-        self.grains = grains
-        self.minion_id = minion_id
-        self.ext = ext
-        self.functions = functions
-        self.pillar_override = pillar_override
-        self.pillarenv = pillarenv
-        self.clean_cache = clean_cache
-        self.extra_minion_data = extra_minion_data
-
-        if saltenv is None:
-            self.saltenv = "base"
-        else:
-            self.saltenv = saltenv
-
-        # Determine caching backend
-        self.cache = salt.utils.cache.CacheFactory.factory(
-            self.opts["pillar_cache_backend"],
-            self.opts["pillar_cache_ttl"],
-            minion_cache_path=self._minion_cache_path(minion_id),
-        )
-
-    def _minion_cache_path(self, minion_id):
-        """
-        Return the path to the cache file for the minion.
-
-        Used only for disk-based backends
-        """
-        return os.path.join(self.opts["cachedir"], "pillar_cache", minion_id)
-
-    def fetch_pillar(self):
-        """
-        In the event of a cache miss, we need to incur the overhead of caching
-        a new pillar.
-        """
-        log.debug("Pillar cache getting external pillar with ext: %s", self.ext)
-        fresh_pillar = Pillar(
-            self.opts,
-            self.grains,
-            self.minion_id,
-            self.saltenv,
-            ext=self.ext,
-            functions=self.functions,
-            pillar_override=None,
-            pillarenv=self.pillarenv,
-            extra_minion_data=self.extra_minion_data,
-        )
-        return fresh_pillar.compile_pillar()
-
-    def clear_pillar(self):
-        """
-        Clear the cache
-        """
-        self.cache.clear()
-
-        return True
-
-    def compile_pillar(self, *args, **kwargs):  # Will likely just be pillar_dirs
-        if self.clean_cache:
-            self.clear_pillar()
-        log.debug(
-            "Scanning pillar cache for information about minion %s and pillarenv %s",
-            self.minion_id,
-            self.pillarenv,
-        )
-        if self.opts["pillar_cache_backend"] == "memory":
-            cache_dict = self.cache
-        else:
-            cache_dict = self.cache._dict
-
-        log.debug("Scanning cache: %s", cache_dict)
-        # Check the cache!
-        if self.minion_id in self.cache:  # Keyed by minion_id
-            # TODO Compare grains, etc?
-            if self.pillarenv in self.cache[self.minion_id]:
-                # We have a cache hit! Send it back.
-                log.debug(
-                    "Pillar cache hit for minion %s and pillarenv %s",
-                    self.minion_id,
-                    self.pillarenv,
-                )
-                return self.cache[self.minion_id][self.pillarenv]
-            else:
-                # We found the minion but not the env. Store it.
-                fresh_pillar = self.fetch_pillar()
-
-                minion_cache = self.cache[self.minion_id]
-                minion_cache[self.pillarenv] = fresh_pillar
-                self.cache[self.minion_id] = minion_cache
-
-                log.debug(
-                    "Pillar cache miss for pillarenv %s for minion %s",
-                    self.pillarenv,
-                    self.minion_id,
-                )
-                return fresh_pillar
-        else:
-            # We haven't seen this minion yet in the cache. Store it.
-            fresh_pillar = self.fetch_pillar()
-            self.cache[self.minion_id] = {self.pillarenv: fresh_pillar}
-            log.debug("Pillar cache miss for minion %s", self.minion_id)
-            log.debug("Current pillar cache: %s", cache_dict)  # FIXME hack!
-            return fresh_pillar
 
 
 class Pillar:
@@ -615,10 +469,15 @@ class Pillar:
 
     def __valid_on_demand_ext_pillar(self, opts):
         """
-        Check to see if the on demand external pillar is allowed
+        Check to see if the on demand external pillar is allowed.
+
+        If this check fails self.ext is set to None, this is important to
+        prevent an on-demand pillare from being rendered when it should not be
+        allowed.
         """
         if not isinstance(self.ext, dict):
             log.error("On-demand pillar %s is not formatted as a dictionary", self.ext)
+            self.ext = None
             return False
 
         on_demand = opts.get("on_demand_ext_pillar", [])
@@ -630,6 +489,7 @@ class Pillar:
                 "The 'on_demand_ext_pillar' configuration option is "
                 "malformed, it should be a list of ext_pillar module names"
             )
+            self.ext = None
             return False
 
         if invalid_on_demand:
@@ -641,6 +501,7 @@ class Pillar:
                 ", ".join(sorted(invalid_on_demand)),
                 ", ".join(on_demand),
             )
+            self.ext = None
             return False
         return True
 
@@ -1392,7 +1253,105 @@ class Pillar:
 # TODO: actually migrate from Pillar to AsyncPillar to allow for futures in
 # ext_pillar etc.
 class AsyncPillar(Pillar):
-    @tornado.gen.coroutine
-    def compile_pillar(self, ext=True):
+    async def compile_pillar(
+        self, ext=True
+    ):  # pylint: disable=invalid-overridden-method
         ret = super().compile_pillar(ext=ext)
-        raise tornado.gen.Return(ret)
+        return ret
+
+
+class PillarCache(Pillar):
+    """
+    Return a cached pillar if it exists, otherwise cache it.
+
+    Pillar caches are structed in two diminensions: minion_id with a dict of
+    saltenvs. Each saltenv contains a pillar dict
+
+    Example data structure:
+
+    ```
+    {'minion_1':
+        {'base': {'pilar_key_1' 'pillar_val_1'}
+    }
+    """
+
+    def __init__(
+        self,
+        *args,
+        clean_cache=False,
+        pillar_override=None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.clean_cache = clean_cache
+        self.pillar_override = pillar_override or {}
+        self.cache = salt.cache.factory(
+            self.opts,
+            driver=self.opts["pillar.cache_driver"],
+            expires=self.opts["pillar_cache_ttl"],
+        )
+
+    @property
+    def pillar_key(self):
+        if not self.opts["pillarenv"]:
+            return self.minion_id
+        else:
+            return f"{self.minion_id}:{self.opts['pillarenv']}"
+
+    def cached_pillar(self):
+        """
+        Return the cached pillar if it exists, or None
+        """
+        return self.cache.fetch("pillar", self.pillar_key)
+
+    def clear_pillar(self):
+        """
+        Clea the pillar cache, if it exists
+        """
+        return self.cache.flush("pillar", self.pillar_key)
+
+    def compile_pillar(self, *args, **kwargs):  # Will likely just be pillar_dirs
+        # matching to consume the same dataset
+        if self.clean_cache:
+            self.clear_pillar()
+        log.debug(
+            "Scanning pillar cache for information about minion %s and pillarenv %s",
+            self.minion_id,
+            self.opts["pillarenv"],
+        )
+
+        # if MDC is on, but not pillar cache, we never read the cache, only write to it
+        if self.opts["minion_data_cache"] and not self.opts["pillar_cache"]:
+            pillar_data = {}
+        else:
+            # Check the cache!
+            pillar_data = self.cached_pillar()
+
+        if pillar_data:
+            log.debug(
+                "Pillar cache hit for minion %s and pillarenv %s",
+                self.minion_id,
+                self.opts["pillarenv"],
+            )
+        else:
+            # We found the minion but not the env. Store it.
+            log.debug(
+                "Pillar cache miss for pillarenv %s for minion %s",
+                self.opts["pillarenv"],
+                self.minion_id,
+            )
+            pillar_data = super().compile_pillar(*args, **kwargs)
+
+            self.cache.store("pillar", self.pillar_key, pillar_data)
+
+        # we dont want the pillar_override baked into the cached compile_pillar from above
+        if self.pillar_override:
+            pillar_data = merge(
+                pillar_data,
+                self.pillar_override,
+                self.merge_strategy,
+                self.opts.get("renderer", "yaml"),
+                self.opts.get("pillar_merge_lists", False),
+            )
+
+        return pillar_data

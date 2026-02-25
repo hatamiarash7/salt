@@ -24,6 +24,7 @@ docs = command_group(
     help="Manpages tools",
     description=__doc__,
     venv_config=VirtualEnvPipConfig(
+        pip_requirement="pip>=24.2",
         requirements_files=[
             tools.utils.REPO_ROOT / "requirements" / "base.txt",
             tools.utils.REPO_ROOT / "requirements" / "zeromq.txt",
@@ -58,9 +59,18 @@ docs = command_group(
         "no_color": {
             "help": "Disable colored output.",
         },
+        "archive": {
+            "help": "Compress the generated documentation into the provided archive.",
+        },
     },
 )
-def man(ctx: Context, no_clean: bool = False, no_color: bool = False):
+def man(
+    ctx: Context,
+    no_clean: bool = False,
+    no_color: bool = False,
+    archive: pathlib.Path = os.environ.get("ARCHIVE_FILENAME"),  # type: ignore[assignment]
+):
+    github_output = os.environ.get("GITHUB_OUTPUT")
     if no_clean is False:
         ctx.run("make", "clean", cwd="doc/", check=True)
     opts = [
@@ -78,9 +88,38 @@ def man(ctx: Context, no_clean: bool = False, no_color: bool = False):
         cwd="doc/",
         check=True,
     )
+    docdir = "doc/man"
+    if not os.path.exists(docdir):
+        # doc/ always exists
+        os.mkdir(docdir)
     for root, dirs, files in os.walk("doc/_build/man"):
         for file in files:
-            shutil.copy(os.path.join(root, file), os.path.join("doc/man", file))
+            shutil.copy(os.path.join(root, file), os.path.join(docdir, file))
+
+    artifact = tools.utils.REPO_ROOT / "doc" / "man"
+    if "LATEST_RELEASE" in os.environ:
+        artifact_name = f"salt-{os.environ['LATEST_RELEASE']}-docs-man"
+    else:
+        artifact_name = "salt-docs-man"
+
+    if archive is not None:
+        ctx.info(f"Compressing the generated documentation to '{archive}'...")
+        ctx.run("tar", "caf", str(archive.resolve()), ".", cwd="doc/man")
+
+        if github_output is not None:
+            with open(github_output, "a", encoding="utf-8") as wfh:
+                wfh.write(
+                    "has-artifacts=true\n"
+                    f"artifact-name={archive.resolve().name}\n"
+                    f"artifact-path={archive.resolve()}\n"
+                )
+    elif github_output is not None:
+        with open(github_output, "a", encoding="utf-8") as wfh:
+            wfh.write(
+                "has-artifacts=true\n"
+                f"artifact-name={artifact.resolve().name}\n"
+                f"artifact-path={artifact.resolve()}\n"
+            )
 
 
 @docs.command(
@@ -142,51 +181,6 @@ def html(
             wfh.write(
                 "has-artifacts=true\n"
                 f"artifact-name={artifact_name}\n"
-                f"artifact-path={artifact.resolve()}\n"
-            )
-
-
-@docs.command(
-    name="epub",
-    arguments={
-        "no_clean": {
-            "help": "Don't cleanup prior to building",
-        },
-        "no_color": {
-            "help": "Disable colored output.",
-        },
-    },
-)
-def epub(ctx: Context, no_clean: bool = False, no_color: bool = False):
-    if no_clean is False:
-        ctx.run("make", "clean", cwd="doc/", check=True)
-    opts = [
-        "-j",
-        "auto",
-        "--keep-going",
-    ]
-    if no_color is False:
-        opts.append("--color")
-    ctx.run(
-        "make",
-        "epub",
-        f"SPHINXOPTS={' '.join(opts)}",
-        cwd="doc/",
-        check=True,
-    )
-
-    artifact = tools.utils.REPO_ROOT / "doc" / "_build" / "epub" / "Salt.epub"
-    if "LATEST_RELEASE" in os.environ:
-        shutil.move(
-            artifact, artifact.parent / f"Salt-{os.environ['LATEST_RELEASE']}.epub"
-        )
-        artifact = artifact.parent / f"Salt-{os.environ['LATEST_RELEASE']}.epub"
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output is not None:
-        with open(github_output, "a", encoding="utf-8") as wfh:
-            wfh.write(
-                "has-artifacts=true\n"
-                f"artifact-name={artifact.resolve().name}\n"
                 f"artifact-path={artifact.resolve()}\n"
             )
 

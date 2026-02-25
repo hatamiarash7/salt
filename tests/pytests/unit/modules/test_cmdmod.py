@@ -17,12 +17,18 @@ import pytest
 import salt.grains.extra
 import salt.modules.cmdmod as cmdmod
 import salt.utils.files
+import salt.utils.path
 import salt.utils.platform
 import salt.utils.stringutils
 from salt._logging import LOG_LEVELS
 from salt.exceptions import CommandExecutionError
 from tests.support.mock import MagicMock, Mock, MockTimedProc, mock_open, patch
 from tests.support.runtests import RUNTIME_VARS
+
+pytestmark = [
+    pytest.mark.core_test,
+    pytest.mark.windows_whitelisted,
+]
 
 DEFAULT_SHELL = "foo/bar"
 MOCK_SHELL_FILE = "# List of acceptable shells\n\n/bin/bash\n"
@@ -665,11 +671,20 @@ def test_run_all_output_loglevel_debug(caplog):
     stdout = b"test"
     proc = MagicMock(return_value=MockTimedProc(stdout=stdout))
 
-    msg = "Executing command 'some' in directory"
+    # When we get back to having to specify a shell, we may need to change this
+    # back.
+    # if salt.utils.platform.is_windows():
+    #     run_cmd = salt.utils.path.which("cmd")
+    #     expected = f"Executing command '{run_cmd}' in directory"
+    # else:
+    #     expected = "Executing command 'some' in directory"
+    expected = "Executing command 'some' in directory"
+
     with patch("salt.utils.timed_subprocess.TimedProc", proc):
         with caplog.at_level(logging.DEBUG, logger="salt.modules.cmdmod"):
             ret = cmdmod.run_all("some command", output_loglevel="debug")
-        assert msg in caplog.text
+        result = caplog.text
+        assert expected.lower() in result.lower()
 
     assert ret["stdout"] == salt.utils.stringutils.to_unicode(stdout)
 
@@ -817,14 +832,12 @@ def test_cmd_script_saltenv_from_config():
 def test_cmd_script_saltenv_from_config_windows():
     mock_cp_get_template = MagicMock()
     mock_cp_cache_file = MagicMock()
-    mock_run = MagicMock()
     with patch.dict(cmdmod.__opts__, {"saltenv": "base"}):
         with patch.dict(
             cmdmod.__salt__,
             {
                 "cp.cache_file": mock_cp_cache_file,
                 "cp.get_template": mock_cp_get_template,
-                "file.user_to_uid": MagicMock(),
                 "file.remove": MagicMock(),
             },
         ):
@@ -1052,81 +1065,117 @@ def test_runas_env_sudo_group(bundled):
                                         )
 
 
-def test_prep_powershell_cmd_no_powershell():
+@pytest.mark.skip_unless_on_windows
+def test__run_no_powershell():
     with pytest.raises(CommandExecutionError):
-        cmdmod._prep_powershell_cmd(
-            win_shell="unk_bin", cmd="Some-Command", encoded_cmd=False
-        )
+        cmdmod._run(shell="unk_bin", cmd="Some-Command", encoded_cmd=False)
 
 
-def test_prep_powershell_cmd():
+@pytest.mark.parametrize(
+    "cmd, parsed",
+    [
+        ("Write-Host foo", "Write-Host foo"),
+        ("& Write-Host foo", "& Write-Host foo"),
+        ("$PSVersionTable", "$PSVersionTable"),
+        ("try {this} catch {that}", "try {this} catch {that}"),
+        ("[bool]@{value = 0}", "[bool]@{value = 0}"),
+        (
+            "(Get-Date(Get-Date).ToUniversalTime() -UFormat %s)",
+            "(Get-Date(Get-Date).ToUniversalTime() -UFormat %s)",
+        ),
+        (
+            "if (1 -eq 1) { exit 0 } else { exit 1 }",
+            "if (1 -eq 1) { exit 0 } else { exit 1 }",
+        ),
+        (
+            "do { $count++; $a++; } while ($x[$a] -ne 0)",
+            "do { $count++; $a++; } while ($x[$a] -ne 0)",
+        ),
+        (
+            "while ($val -ne 3) { $val++; Write-Host $val }",
+            "while ($val -ne 3) { $val++; Write-Host $val }",
+        ),
+        (
+            "trap { 'Error found.' }",
+            "trap { 'Error found.' }",
+        ),
+        (
+            "for ($i=1; $i -le 10; $i++) { Write-Host $i }",
+            "for ($i=1; $i -le 10; $i++) { Write-Host $i }",
+        ),
+        (
+            "foreach ($file in Get-ChildItem) { Write-Host $file }",
+            "foreach ($file in Get-ChildItem) { Write-Host $file }",
+        ),
+        (
+            'data { if ($null) { "To get help for this cmdlet, type Get-Help New-Dictionary." } }',
+            'data { if ($null) { "To get help for this cmdlet, type Get-Help New-Dictionary." } }',
+        ),
+    ],
+)
+@pytest.mark.skip_unless_on_windows
+def test_prep_powershell_cmd(cmd, parsed):
     """
     Tests _prep_powershell_cmd returns correct cmd
     """
-    stack = [["", "", ""], ["", "", ""], ["", "", ""], ["", "", ""]]
-    with patch("traceback.extract_stack", return_value=stack), patch(
-        "salt.utils.path.which", return_value="C:\\powershell.exe"
-    ):
-        ret = cmdmod._prep_powershell_cmd(
-            win_shell="powershell", cmd="$PSVersionTable", encoded_cmd=False
-        )
-        expected = [
-            "C:\\powershell.exe",
-            "-NonInteractive",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "& {$PSVersionTable}",
-        ]
-        assert ret == expected
+    ret = cmdmod._prep_powershell_cmd(
+        win_shell="powershell.exe", cmd=cmd, encoded_cmd=False
+    )
+    expected = [
+        "powershell.exe",
+        "-NonInteractive",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        parsed,
+    ]
+    assert ret == expected
 
 
+@pytest.mark.skip_unless_on_windows
 def test_prep_powershell_cmd_encoded():
     """
     Tests _prep_powershell_cmd returns correct cmd when encoded_cmd=True
     """
-    stack = [["", "", ""], ["", "", ""], ["", "", ""], ["", "", ""]]
     # This is the encoded command for 'Write-Host "Encoded HOLO"'
     e_cmd = "VwByAGkAdABlAC0ASABvAHMAdAAgACIARQBuAGMAbwBkAGUAZAAgAEgATwBMAE8AIgA="
-    with patch("traceback.extract_stack", return_value=stack), patch(
-        "salt.utils.path.which", return_value="C:\\powershell.exe"
-    ):
-        ret = cmdmod._prep_powershell_cmd(
-            win_shell="powershell", cmd=e_cmd, encoded_cmd=True
-        )
-        expected = [
-            "C:\\powershell.exe",
-            "-NonInteractive",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            f"{e_cmd}",
-        ]
-        assert ret == expected
+    ret = cmdmod._prep_powershell_cmd(
+        win_shell="powershell.exe", cmd=e_cmd, encoded_cmd=True
+    )
+    expected = [
+        "powershell.exe",
+        "-NonInteractive",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        e_cmd,
+    ]
+    assert ret == expected
 
 
+@pytest.mark.skip_unless_on_windows
 def test_prep_powershell_cmd_script():
     """
     Tests _prep_powershell_cmd returns correct cmd when called from cmd.script
     """
     stack = [["", "", ""], ["", "", "script"], ["", "", ""], ["", "", ""]]
-    script = r"C:\some\script.ps1"
     with patch("traceback.extract_stack", return_value=stack), patch(
-        "salt.utils.path.which", return_value="C:\\powershell.exe"
+        "salt.utils.path.which", return_value="powershell.exe"
     ):
+        script = r"C:\some\script.ps1"
         ret = cmdmod._prep_powershell_cmd(
-            win_shell="powershell", cmd=script, encoded_cmd=False
+            win_shell="powershell.exe", cmd=[script], encoded_cmd=False
         )
         expected = [
-            "C:\\powershell.exe",
+            "powershell.exe",
             "-NonInteractive",
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            f"& {script}",
+            "-File",
+            script,
         ]
         assert ret == expected
 
@@ -1140,6 +1189,7 @@ def test_prep_powershell_cmd_script():
         ('{"foo": "bar"}', '{"foo": "bar"}'),  # Should leave unchanged
     ],
 )
+@pytest.mark.skip_unless_on_windows
 def test_prep_powershell_json(text, expected):
     """
     Make sure the output is valid json

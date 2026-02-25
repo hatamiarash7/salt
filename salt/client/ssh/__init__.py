@@ -42,6 +42,7 @@ import salt.utils.json
 import salt.utils.network
 import salt.utils.path
 import salt.utils.platform
+import salt.utils.relenv
 import salt.utils.stringutils
 import salt.utils.thin
 import salt.utils.url
@@ -190,6 +191,59 @@ EOF'''.format(
     ]
 )
 
+
+SSH_SH_SHIM_RELENV = "\n".join(
+    [
+        s.strip()
+        for s in """
+/bin/sh << 'EOF'
+set -e
+set -u
+DEBUG="{DEBUG}"
+if [ -n "$DEBUG" ]; then set -x; fi
+
+SET_PATH="{SET_PATH}"
+if [ -n "$SET_PATH" ]; then export PATH=$SET_PATH; fi
+
+SUDO=""
+if [ -n "{SUDO}" ]; then SUDO="{SUDO} "; fi
+
+SUDO_USER="{SUDO_USER}"
+if [ "$SUDO" ] && [ "$SUDO_USER" ]; then SUDO="$SUDO -u $SUDO_USER"; fi
+
+RELENV_TAR="{THIN_DIR}/salt-relenv.tar.xz"
+mkdir -p "{THIN_DIR}"
+SALT_CALL_BIN="{THIN_DIR}/salt-call"
+
+# Extract relenv tarball if not already extracted
+if [ ! -x "$SALT_CALL_BIN" ]; then
+    if [ ! -f "$RELENV_TAR" ]; then
+        echo deploy
+        echo "ERROR: relenv tarball not found at $RELENV_TAR" >&2
+        exit 11
+    fi
+
+    # Create directory if not exists and extract the tarball
+    tar --strip-components=1 -xf "$RELENV_TAR" -C "{THIN_DIR}"
+fi
+
+# Check if Python binary is executable
+if [ ! -x "$SALT_CALL_BIN" ]; then
+    echo "ERROR: salt-call binary not found or not executable at $SALT_CALL_BIN" >&2
+    exit 1
+fi
+
+echo "{RSTR}"
+echo "{RSTR}" >&2
+
+exec $SUDO "$SALT_CALL_BIN" --retcode-passthrough --local --metadata --out=json -lquiet -c "{THIN_DIR}" {ARGS}
+EOF
+""".split(
+            "\n"
+        )
+    ]
+)
+
 if not salt.utils.platform.is_windows() and not salt.utils.platform.is_junos():
     shim_file = os.path.join(os.path.dirname(__file__), "ssh_py_shim.py")
     if not os.path.exists(shim_file):
@@ -290,6 +344,18 @@ class SSH(MultiprocessingStateMixin):
                 "ssh_timeout", salt.config.DEFAULT_MASTER_OPTS["ssh_timeout"]
             )
             + self.opts.get("timeout", salt.config.DEFAULT_MASTER_OPTS["timeout"]),
+            "keepalive": self.opts.get(
+                "ssh_keepalive",
+                salt.config.DEFAULT_MASTER_OPTS["ssh_keepalive"],
+            ),
+            "keepalive_interval": self.opts.get(
+                "ssh_keepalive_interval",
+                salt.config.DEFAULT_MASTER_OPTS["ssh_keepalive_interval"],
+            ),
+            "keepalive_count_max": self.opts.get(
+                "ssh_keepalive_count_max",
+                salt.config.DEFAULT_MASTER_OPTS["ssh_keepalive_count_max"],
+            ),
             "sudo": self.opts.get(
                 "ssh_sudo", salt.config.DEFAULT_MASTER_OPTS["ssh_sudo"]
             ),
@@ -310,15 +376,18 @@ class SSH(MultiprocessingStateMixin):
             self.opts["ssh_wipe"] = "True"
         self.returners = salt.loader.returners(self.opts, {})
         self.fsclient = salt.fileclient.FSClient(self.opts)
-        self.thin = salt.utils.thin.gen_thin(
-            self.opts["cachedir"],
-            extra_mods=self.opts.get("thin_extra_mods"),
-            overwrite=self.opts["regen_thin"],
-            extended_cfg=self.opts.get("ssh_ext_alternatives"),
-            exclude_saltexts=self.opts.get("thin_exclude_saltexts", False),
-            saltext_allowlist=self.opts.get("thin_saltext_allowlist"),
-            saltext_blocklist=self.opts.get("thin_saltext_blocklist"),
-        )
+        if self.opts.get("relenv"):
+            self.thin = None
+        else:
+            self.thin = salt.utils.thin.gen_thin(
+                self.opts["cachedir"],
+                extra_mods=self.opts.get("thin_extra_mods"),
+                overwrite=self.opts["regen_thin"],
+                extended_cfg=self.opts.get("ssh_ext_alternatives"),
+                exclude_saltexts=self.opts.get("thin_exclude_saltexts", False),
+                saltext_allowlist=self.opts.get("thin_saltext_allowlist"),
+                saltext_blocklist=self.opts.get("thin_saltext_blocklist"),
+            )
         self.mods = mod_data(self.fsclient)
 
     # __setstate__ and __getstate__ are only used on spawning platforms.
@@ -483,7 +552,7 @@ class SSH(MultiprocessingStateMixin):
             )
             deploy = input("[Y/n] ")
             if deploy.startswith(("n", "N")):
-                return ret
+                return ret, None
             target["passwd"] = getpass.getpass(
                 "Password for {}@{}: ".format(target["user"], host)
             )
@@ -976,6 +1045,9 @@ class Single:
         remote_port_forwards=None,
         winrm=False,
         ssh_options=None,
+        keepalive=True,
+        keepalive_interval=60,
+        keepalive_count_max=3,
         **kwargs,
     ):
         # Get mine setting and mine_functions if defined in kwargs (from roster)
@@ -1036,6 +1108,9 @@ class Single:
             "priv": priv,
             "priv_passwd": priv_passwd,
             "timeout": timeout,
+            "keepalive": keepalive,
+            "keepalive_interval": keepalive_interval,
+            "keepalive_count_max": keepalive_count_max,
             "sudo": sudo,
             "tty": tty,
             "mods": self.mods,
@@ -1071,7 +1146,73 @@ class Single:
             # Determine if Windows client is x86 or AMD64
             arch, _, _ = self.shell.exec_cmd("powershell $ENV:PROCESSOR_ARCHITECTURE")
             self.arch = arch.strip()
-        self.thin = thin if thin else salt.utils.thin.thin_path(opts["cachedir"])
+
+        if self.opts.get("relenv"):
+            kernel, os_arch = self.detect_os_arch()
+            self.thin = salt.utils.relenv.gen_relenv(
+                opts["cachedir"], kernel=kernel, os_arch=os_arch
+            )
+        else:
+            self.thin = thin if thin else salt.utils.thin.thin_path(opts["cachedir"])
+
+    def detect_os_arch(self):
+        """
+        Detect the OS and architecture of the target machine.
+        This is specifically for the purpose of downloading the latest onedir tarball from the Salt repos.
+        Returns a tuple of (kernel, architecture) or raises an error if detection fails.
+        """
+        # Unified command for Unix-based systems (including fallback to OSTYPE and MACHTYPE)
+        unix_cmd = 'uname -s -m || echo "$OSTYPE $MACHTYPE"'
+
+        # Command for Windows systems (PowerShell)
+        windows_cmd = 'echo "$env:PROCESSOR_ARCHITECTURE"'
+
+        # Try Unix command first
+        stdout, stderr, retcode = self.shell.exec_cmd(unix_cmd)
+
+        if retcode == 0 and stdout:
+            # Unix-based detection succeeded
+            stdout = stdout.lower().strip()
+
+            # Determine OS and architecture for Unix
+            if "linux" in stdout:
+                kernel = "linux"
+            elif "darwin" in stdout or "macos" in stdout:
+                kernel = "macos"
+            else:
+                raise ValueError(f"Unsupported Unix-based kernel: {stdout}")
+
+            # Set architecture
+            if "x86" in stdout:
+                os_arch = "x86_64"
+            else:
+                os_arch = "arm64"
+        else:
+            # If Unix detection fails, check for Windows-specific detection
+            stdout, stderr, retcode = self.shell.exec_cmd(windows_cmd)
+
+            if retcode == 0 and stdout:
+                # Windows detection
+                stdout = stdout.lower().strip()
+
+                # Set Windows architecture based on environment variable
+                if "64" in stdout:
+                    os_arch = "amd64"
+                elif "x86" in stdout:
+                    os_arch = "x86"
+                else:
+                    raise ValueError(f"Unsupported architecture for Windows: {stdout}")
+
+                kernel = "windows"
+            else:
+                # Neither Unix nor Windows detection succeeded
+                raise ValueError(
+                    f"Failed to detect OS and architecture. Commands failed with output: {stdout}, {stderr}"
+                )
+
+        log.info(f'Detected kernel "{kernel}" and architecture "{os_arch}" on target')
+
+        return kernel, os_arch
 
     def __arg_comps(self):
         """
@@ -1145,10 +1286,16 @@ class Single:
         """
         Deploy salt-thin
         """
-        self.shell.send(
-            self.thin,
-            os.path.join(self.thin_dir, "salt-thin.tgz"),
-        )
+        if self.opts.get("relenv"):
+            self.shell.send(
+                self.thin,
+                os.path.join(self.thin_dir, "salt-relenv.tar.xz"),
+            )
+        else:
+            self.shell.send(
+                self.thin,
+                os.path.join(self.thin_dir, "salt-thin.tgz"),
+            )
         self.deploy_ext()
         return True
 
@@ -1381,6 +1528,7 @@ class Single:
                 self.args = mine_args
                 self.kwargs = {}
 
+        retcode = 0
         try:
             if self.mine:
                 result = wrapper[mine_fun](*self.args, **self.kwargs)
@@ -1442,12 +1590,24 @@ class Single:
             cachedir = self.opts["_caller_cachedir"]
         else:
             cachedir = self.opts["cachedir"]
-        thin_code_digest, thin_sum = salt.utils.thin.thin_sum(cachedir, "sha1")
         debug = ""
         if not self.opts.get("log_level"):
             self.opts["log_level"] = "info"
         if LOG_LEVELS["debug"] >= LOG_LEVELS[self.opts.get("log_level", "info")]:
             debug = "1"
+
+        if self.opts.get("relenv"):
+            return SSH_SH_SHIM_RELENV.format(
+                DEBUG=debug,
+                SUDO=sudo,
+                SUDO_USER=sudo_user or "",
+                THIN_DIR=self.thin_dir,
+                SET_PATH=self.set_path,
+                RSTR=RSTR,
+                ARGS=" ".join(self.argv),
+            )
+
+        thin_code_digest, thin_sum = salt.utils.thin.thin_sum(cachedir, "sha1")
         arg_str = '''
 OPTIONS.config = \
 """
@@ -1816,7 +1976,6 @@ def mod_data(fsclient):
     """
     Generate the module arguments for the shim data
     """
-    # TODO, change out for a fileserver backend
     sync_refs = [
         "modules",
         "states",
@@ -1826,49 +1985,111 @@ def mod_data(fsclient):
         "utils",
     ]
     ret = {}
-    with fsclient:
-        envs = fsclient.envs()
-        ver_base = ""
-        for env in envs:
-            files = fsclient.file_list(env)
-            for ref in sync_refs:
-                mods_data = {}
-                pref = f"_{ref}"
-                for fn_ in sorted(files):
-                    if fn_.startswith(pref):
-                        if fn_.endswith((".py", ".so", ".pyx")):
-                            full = salt.utils.url.create(fn_)
-                            mod_path = fsclient.cache_file(full, env)
-                            if not os.path.isfile(mod_path):
-                                continue
-                            mods_data[os.path.basename(fn_)] = mod_path
-                            chunk = salt.utils.hashutils.get_hash(mod_path)
-                            ver_base += chunk
-                if mods_data:
-                    if ref in ret:
-                        ret[ref].update(mods_data)
-                    else:
-                        ret[ref] = mods_data
-        if not ret:
-            return {}
 
-        ver_base = salt.utils.stringutils.to_bytes(ver_base)
+    # Get module directories from global loader (includes entry-points, extension_modules, etc.)
+    opts = fsclient.opts
+    for ref in sync_refs:
+        try:
+            # Use salt.loader._module_dirs but skip entry-points (saltexts handled by gen_thin)
+            # This still discovers extension_modules from config and module_dirs from CLI
+            module_dirs = salt.loader._module_dirs(
+                opts, ref, tag=ref.rstrip("s"), load_extensions=False
+            )
 
-        ver = hashlib.sha1(ver_base).hexdigest()
-        ext_tar_path = os.path.join(fsclient.opts["cachedir"], f"ext_mods.{ver}.tgz")
-        mods = {"version": ver, "file": ext_tar_path}
-        if os.path.isfile(ext_tar_path):
-            return mods
-        tfp = tarfile.open(ext_tar_path, "w:gz")
-        verfile = os.path.join(fsclient.opts["cachedir"], "ext_mods.ver")
-        with salt.utils.files.fopen(verfile, "w+") as fp_:
-            fp_.write(ver)
-        tfp.add(verfile, "ext_version")
-        for ref in ret:
-            for fn_ in ret[ref]:
-                tfp.add(ret[ref][fn_], os.path.join(ref, fn_))
-        tfp.close()
+            for mod_dir in module_dirs:
+                if not os.path.isdir(mod_dir):
+                    continue
+
+                for fn_ in os.listdir(mod_dir):
+                    if fn_.endswith((".py", ".so", ".pyx")) and not fn_.startswith(
+                        "__"
+                    ):
+                        mod_path = os.path.join(mod_dir, fn_)
+                        if not os.path.isfile(mod_path):
+                            continue
+
+                        if ref not in ret:
+                            ret[ref] = {}
+                        ret[ref][fn_] = mod_path
+        except Exception as exc:  # pylint: disable=broad-except
+            log.debug(
+                "Failed to load %s modules from global loader: %s",
+                ref,
+                exc,
+            )
+
+    # Also scan file_roots directly to find modules (avoids fsclient.cache_file issues)
+    try:
+        file_roots = opts.get("file_roots", {})
+        for saltenv, roots in file_roots.items():
+            for root in roots:
+                if not os.path.isdir(root):
+                    continue
+
+                for ref in sync_refs:
+                    # Check for _modules, _states, etc. directories in file_roots
+                    mod_dir = os.path.join(root, f"_{ref}")
+                    if not os.path.isdir(mod_dir):
+                        continue
+
+                    try:
+                        for fn_ in os.listdir(mod_dir):
+                            if fn_.endswith(
+                                (".py", ".so", ".pyx")
+                            ) and not fn_.startswith("__"):
+                                mod_path = os.path.join(mod_dir, fn_)
+                                if not os.path.isfile(mod_path):
+                                    continue
+
+                                if ref not in ret:
+                                    ret[ref] = {}
+                                # Use basename to avoid duplicates
+                                ret[ref][fn_] = mod_path
+                    except Exception as exc:  # pylint: disable=broad-except
+                        log.debug(
+                            "Failed to scan directory %s: %s",
+                            mod_dir,
+                            exc,
+                        )
+    except Exception as exc:  # pylint: disable=broad-except
+        log.debug(
+            "Failed to load modules from file_roots: %s",
+            exc,
+        )
+
+    # Calculate version hash from all collected modules
+    ver_base = ""
+    for ref in ret:
+        for fn_ in sorted(ret[ref].keys()):
+            chunk = salt.utils.hashutils.get_hash(ret[ref][fn_])
+            ver_base += chunk
+
+    if not ret:
+        return {}
+
+    ver_base = salt.utils.stringutils.to_bytes(ver_base)
+
+    ver = hashlib.sha1(ver_base).hexdigest()
+    ext_tar_path = os.path.join(fsclient.opts["cachedir"], f"ext_mods.{ver}.tgz")
+    mods = {"version": ver, "file": ext_tar_path}
+    if os.path.isfile(ext_tar_path):
         return mods
+
+    # Ensure cache directory exists
+    cache_dir = fsclient.opts["cachedir"]
+    if not os.path.isdir(cache_dir):
+        os.makedirs(cache_dir)
+
+    tfp = tarfile.open(ext_tar_path, "w:gz")
+    verfile = os.path.join(fsclient.opts["cachedir"], "ext_mods.ver")
+    with salt.utils.files.fopen(verfile, "w+") as fp_:
+        fp_.write(ver)
+    tfp.add(verfile, "ext_version")
+    for ref in ret:
+        for fn_ in ret[ref]:
+            tfp.add(ret[ref][fn_], os.path.join(ref, fn_))
+    tfp.close()
+    return mods
 
 
 def ssh_version():

@@ -24,7 +24,8 @@ def username_str(user):
         try:
             user.delete(_username, purge=True, force=True)
         except Exception:  # pylint: disable=broad-except
-            # The point here is just system cleanup. It can fail if no account was created
+            # The point here is just system cleanup. It can fail if no account
+            # was created
             pass
 
 
@@ -223,9 +224,9 @@ def test_list_groups_int(user, account_int):
     assert ret == ["Users"]
 
 
-def test_list_users(user):
+def test_list_users(user, account_str):
     ret = user.list_users()
-    assert "Administrator" in ret
+    assert account_str.username in ret
 
 
 def test_removegroup_str(user, account_str):

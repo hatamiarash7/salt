@@ -40,6 +40,15 @@ SHARED_WORKFLOW_CONTEXT_FILEPATH = (
 )
 
 
+class UpdateProgress:
+    def __init__(self, progress, task):
+        self.progress = progress
+        self.task = task
+
+    def __call__(self, chunk_size):
+        self.progress.update(self.task, advance=chunk_size)
+
+
 class ExitCode(IntEnum):
     OK = 0
     FAIL = 1
@@ -70,6 +79,31 @@ class OS:
 class Linux(OS):
     platform: str = attr.ib(default="linux")
     fips: bool = attr.ib(default=False)
+    container: str = attr.ib(default=None)
+
+    @property
+    def job_name(self):
+        return f"test-{ self.slug.replace('.', '') }{'-fips' if self.fips else ''}"
+
+    def as_dict(self):
+        return {
+            "platform": self.platform,
+            "slug": self.slug,
+            "arch": self.arch,
+            "display_name": self.display_name,
+            "pkg_type": self.pkg_type,
+            "fips": self.fips,
+            "container": self.container,
+            "job_name": self.job_name,
+        }
+
+
+@attr.s(frozen=True, slots=True)
+class LinuxPkg(Linux):
+
+    @property
+    def job_name(self):
+        return f"test-pkg-{ self.slug.replace('.', '') }{ '-fips' if self.fips else ''}"
 
 
 @attr.s(frozen=True, slots=True)
@@ -81,6 +115,29 @@ class MacOS(OS):
     def _default_runner(self):
         return self.slug
 
+    @property
+    def job_name(self):
+        return f"test-{ self.slug.replace('.', '') }"
+
+    def as_dict(self):
+        return {
+            "platform": self.platform,
+            "slug": self.slug,
+            "arch": self.arch,
+            "display_name": self.display_name,
+            "pkg_type": self.pkg_type,
+            "runner": self.runner,
+            "job_name": self.job_name,
+        }
+
+
+@attr.s(frozen=True, slots=True)
+class MacOSPkg(MacOS):
+
+    @property
+    def job_name(self):
+        return f"test-pkg-{ self.slug.replace('.', '') }"
+
 
 @attr.s(frozen=True, slots=True)
 class Windows(OS):
@@ -88,6 +145,28 @@ class Windows(OS):
 
     def _get_default_arch(self):
         return "amd64"
+
+    @property
+    def job_name(self):
+        return f"test-{ self.slug.replace('.', '') }"
+
+    def as_dict(self):
+        return {
+            "platform": self.platform,
+            "slug": self.slug,
+            "arch": self.arch,
+            "display_name": self.display_name,
+            "pkg_type": self.pkg_type,
+            "job_name": self.job_name,
+        }
+
+
+@attr.s(frozen=True, slots=True)
+class WindowsPkg(Windows):
+
+    @property
+    def job_name(self):
+        return f"test-pkg-{ self.slug.replace('.', '') }-{ self.pkg_type.lower() }"
 
 
 class PlatformDefinitions(TypedDict):
@@ -186,7 +265,9 @@ class Version(packaging.version.Version):
         return hash(str(self))
 
 
-def get_salt_releases(ctx: Context, repository: str) -> list[Version]:
+def get_salt_releases(
+    ctx: Context, repository: str = "saltstack/salt"
+) -> list[Version]:
     """
     Return a list of salt versions
     """
@@ -227,6 +308,8 @@ def get_salt_releases(ctx: Context, repository: str) -> list[Version]:
             )
             ctx.exit(1)
         for release in ret.json():
+            if release.get("draft", False):
+                continue
             name = release["name"]
             if name.startswith("v"):
                 name = name[1:]
@@ -347,14 +430,3 @@ def get_cicd_shared_context():
     """
     shared_context_file = REPO_ROOT / "cicd" / "shared-gh-workflows-context.yml"
     return yaml.safe_load(shared_context_file.read_text())
-
-
-@cache
-def get_golden_images():
-    """
-    Return the golden images information stored on file.
-    """
-    with REPO_ROOT.joinpath("cicd", "golden-images.json").open(
-        "r", encoding="utf-8"
-    ) as rfh:
-        return json.load(rfh)

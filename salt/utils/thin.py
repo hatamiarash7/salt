@@ -20,11 +20,15 @@ import types
 import zipfile
 
 import distro
+import idna
 import jinja2
 import looseversion
 import msgpack
+import networkx
 import packaging
+import requests
 import tornado
+import urllib3
 import yaml
 
 import salt
@@ -89,6 +93,12 @@ except ImportError:
         from salt.ext import ssl_match_hostname
     except ImportError:
         ssl_match_hostname = None
+
+try:
+    import backports
+except ImportError:
+    # Python 3.13+ doesn't have backports package
+    backports = None
 
 concurrent = None
 
@@ -280,6 +290,10 @@ def get_tops_python(py_ver, exclude=None, ext_py_ver=None):
         "yaml",
         "tornado",
         "msgpack",
+        "networkx",
+        "requests",
+        "idna",
+        "urllib3",
         "certifi",
         "singledispatch",
         "concurrent",
@@ -290,6 +304,9 @@ def get_tops_python(py_ver, exclude=None, ext_py_ver=None):
         "looseversion",
         "packaging",
     ]
+    # backports package doesn't exist in Python 3.13+
+    if sys.version_info < (3, 13):
+        mods.append("backports")
     if ext_py_ver and tuple(ext_py_ver) >= (3, 0):
         mods.append("distro")
 
@@ -330,7 +347,7 @@ def get_ext_tops(config):
     """
     config = copy.deepcopy(config) or {}
     alternatives = {}
-    required = ["jinja2", "yaml", "tornado", "msgpack"]
+    required = ["jinja2", "yaml", "tornado", "msgpack", "networkx"]
     tops = []
     for ns, cfg in config.items():
         alternatives[ns] = cfg
@@ -429,6 +446,7 @@ def get_tops(extra_mods="", so_mods=""):
         yaml,
         tornado,
         msgpack,
+        networkx,
         certifi,
         singledispatch,
         concurrent,
@@ -438,6 +456,10 @@ def get_tops(extra_mods="", so_mods=""):
         backports_abc,
         looseversion,
         packaging,
+        backports,
+        requests,
+        idna,
+        urllib3,
     ]
     modules = find_site_modules("contextvars")
     if modules:
@@ -456,8 +478,7 @@ def get_tops(extra_mods="", so_mods=""):
     for mod in [m for m in extra_mods.split(",") if m]:
         if mod not in locals() and mod not in globals():
             try:
-                locals()[mod] = __import__(mod)
-                moddir, modname = os.path.split(locals()[mod].__file__)
+                moddir, modname = os.path.split(__import__(mod).__file__)
                 base, _ = os.path.splitext(modname)
                 if base == "__init__":
                     tops.append((moddir, None))
@@ -470,8 +491,7 @@ def get_tops(extra_mods="", so_mods=""):
 
     for mod in [m for m in so_mods.split(",") if m]:
         try:
-            locals()[mod] = __import__(mod)
-            tops.append((locals()[mod].__file__, None))
+            tops.append((__import__(mod).__file__, None))
         except ImportError:
             log.error('Unable to import so-module "%s"', mod, exc_info=True)
 
@@ -1035,6 +1055,7 @@ def gen_min(
         "salt/utils/process.py",
         "salt/utils/jinja.py",
         "salt/utils/rsax931.py",
+        "salt/utils/requisite.py",
         "salt/utils/context.py",
         "salt/utils/minion.py",
         "salt/utils/error.py",

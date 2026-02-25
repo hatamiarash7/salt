@@ -72,6 +72,8 @@ def pkg_name(grains):
             _pkg = "units"
     elif grains["os_family"] == "Debian":
         _pkg = "ifenslave"
+    elif grains["os_family"] == "Suse":
+        _pkg = "wget"
     return _pkg
 
 
@@ -135,12 +137,8 @@ def test_mod_del_repo(grains, modules):
         elif grains["os_family"] == "RedHat":
             repo = "saltstack"
             name = "SaltStack repo for RHEL/CentOS {}".format(grains["osmajorrelease"])
-            baseurl = "https://repo.saltproject.io/py3/redhat/{}/x86_64/latest/".format(
-                grains["osmajorrelease"]
-            )
-            gpgkey = "https://repo.saltproject.io/py3/redhat/{}/x86_64/latest/SALTSTACK-GPG-KEY.pub".format(
-                grains["osmajorrelease"]
-            )
+            baseurl = "https://packages.broadcom.com/artifactory/saltproject-rpm/"
+            gpgkey = "https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public"
             gpgcheck = 1
             enabled = 1
             ret = modules.pkg.mod_repo(
@@ -222,6 +220,8 @@ def test_owner(modules, grains):
     binary = "/bin/ls"
     if grains["os"] == "Ubuntu" and grains["osmajorrelease"] >= 24:
         binary = "/usr/bin/ls"
+    if grains["os"] == "Debian" and grains["osmajorrelease"] >= 13:
+        binary = "/usr/bin/ls"
 
     ret = modules.pkg.owner(binary)
     assert len(ret) != 0
@@ -236,6 +236,8 @@ def test_which(modules, grains):
     """
     binary = "/bin/ls"
     if grains["os"] == "Ubuntu" and grains["osmajorrelease"] >= 24:
+        binary = "/usr/bin/ls"
+    elif grains["os"] == "Debian" and grains["osmajorrelease"] >= 13:
         binary = "/usr/bin/ls"
     ret = modules.pkg.which(binary)
     assert len(ret) != 0

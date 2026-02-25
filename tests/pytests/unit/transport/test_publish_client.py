@@ -5,6 +5,7 @@
 import asyncio
 import hashlib
 import logging
+import selectors
 import socket
 import time
 
@@ -231,11 +232,10 @@ async def test_publish_client_connect_server_comes_up(transport, io_loop):
         await asyncio.sleep(0.03)
         ctx.term()
     elif transport == "tcp":
-
         client = salt.transport.tcp.PublishClient(opts, io_loop, host=host, port=port)
         # XXX: This is an implimentation detail of the tcp transport.
         # await client.connect(port)
-        io_loop.spawn_callback(client.connect)
+        io_loop.spawn_callback(client.connect, timeout=120)
         assert client._stream is None
         await asyncio.sleep(2)
 
@@ -296,3 +296,39 @@ async def test_publish_client_connect_server_comes_up(transport, io_loop):
         raise Exception(f"Unknown transport {transport}")
     client.close()
     await asyncio.sleep(0.03)
+
+
+async def test_recv_timeout_zero():
+    """
+    Test recv method with timeout=0.
+    """
+    host = "127.0.0.1"
+    port = 11122
+    ioloop = asyncio.get_running_loop()
+    mock_stream = MagicMock()
+    mock_unpacker = MagicMock()
+    mock_unpacker.__iter__.return_value = []
+    mock_socket = MagicMock()
+    mock_stream.socket = mock_socket
+
+    mock_selector_instance = MagicMock()
+    mock_selector_instance.__enter__.return_value = mock_selector_instance
+    mock_selector_instance.__exit__.return_value = None
+    mock_selector_instance.select.return_value = []
+
+    with patch(
+        "salt.transport.tcp.selectors.DefaultSelector",
+        return_value=mock_selector_instance,
+    ), patch("salt.utils.msgpack.Unpacker", return_value=mock_unpacker):
+
+        client = salt.transport.tcp.PublishClient({}, ioloop, host=host, port=port)
+        client._stream = mock_stream
+        result = await client.recv(timeout=0)
+
+        assert result is None
+        mock_selector_instance.register.assert_called_once_with(
+            mock_socket, selectors.EVENT_READ
+        )
+        mock_selector_instance.unregister.assert_called_once_with(mock_socket)
+    mock_selector_instance.__enter__.assert_called_once()
+    mock_selector_instance.__exit__.assert_called_once()

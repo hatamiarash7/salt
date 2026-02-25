@@ -287,7 +287,12 @@ def _linux_gpu_data():
         "matrox",
         "aspeed",
     ]
-    gpu_classes = ("vga compatible controller", "3d controller", "display controller")
+    gpu_classes = (
+        "3d controller",
+        "display controller",
+        "processing accelerators",
+        "vga compatible controller",
+    )
 
     devs = []
     try:
@@ -785,6 +790,9 @@ def _windows_virtual(osdata):
     # Manufacturer: Parallels Software International Inc.
     elif "Parallels" in manufacturer:
         grains["virtual"] = "Parallels"
+    elif "Nutanix" in manufacturer and "AHV" in product_name:
+        grains["virtual"] = "kvm"
+        grains["virtual_subtype"] = "Nutanix AHV"
     # Apache CloudStack
     elif "CloudStack KVM Hypervisor" in product_name:
         grains["virtual"] = "kvm"
@@ -925,6 +933,14 @@ def _virtual(osdata):
                 grains["virtual"] = "container"
                 grains["virtual_subtype"] = "LXC"
                 break
+            elif "podman" in output:
+                grains["virtual"] = "container"
+                grains["virtual_subtype"] = "Podman"
+                break
+            elif "docker" in output:
+                grains["virtual"] = "container"
+                grains["virtual_subtype"] = "Docker"
+                break
             elif "amazon" in output:
                 grains["virtual"] = "Nitro"
                 grains["virtual_subtype"] = "Amazon EC2"
@@ -938,11 +954,19 @@ def _virtual(osdata):
                     grains["virtual"] = "container"
                     grains["virtual_subtype"] = "LXC"
                     break
+                elif "docker" in line:
+                    grains["virtual"] = "container"
+                    grains["virtual_subtype"] = "Docker"
+                    break
                 elif "vmware" in line:
                     grains["virtual"] = "VMware"
                     break
                 elif "parallels" in line:
                     grains["virtual"] = "Parallels"
+                    break
+                elif "nutanix" in line:
+                    grains["virtual"] = "kvm"
+                    grains["virtual_subtype"] = "Nutanix AHV"
                     break
                 elif "hyperv" in line:
                     grains["virtual"] = "HyperV"
@@ -995,6 +1019,9 @@ def _virtual(osdata):
                 grains["virtual"] = "Parallels"
             elif "Manufacturer: Google" in output:
                 grains["virtual"] = "kvm"
+            elif "Manufacturer: Nutanix" in output and "Product Name: AHV" in output:
+                grains["virtual"] = "kvm"
+                grains["virtual_subtype"] = "Nutanix AHV"
             # Proxmox KVM
             elif "Vendor: SeaBIOS" in output:
                 grains["virtual"] = "kvm"
@@ -1251,6 +1278,7 @@ def _virtual(osdata):
         grains["virtual"] = "virtual"
 
     # Try to detect if the instance is running on Amazon EC2
+    # or Nutanix AHV
     if grains["virtual"] in ("qemu", "kvm", "xen", "amazon"):
         dmidecode = salt.utils.path.which("dmidecode")
         if dmidecode:
@@ -1270,12 +1298,16 @@ def _virtual(osdata):
             elif re.match(r".*Version: [^\r\n]+\.amazon.*", output, flags=re.DOTALL):
                 grains["virtual_subtype"] = "Amazon EC2"
 
+            elif "Manufacturer: Nutanix" in output and "Product Name: AHV" in output:
+                grains["virtual_subtype"] = "Nutanix AHV"
+
     for command in failed_commands:
         log.info(
             "Although '%s' was found in path, the current user "
             "cannot execute it. Grains output might not be "
             "accurate.",
             command,
+            once=True,
         )
     return grains
 
@@ -1775,6 +1807,7 @@ _OS_NAME_MAP = {
     "cloudlinux": "CloudLinux",
     "virtuozzo": "Virtuozzo",
     "almalinux": "AlmaLinux",
+    "almalinuxk": "AlmaLinux",
     "pidora": "Fedora",
     "scientific": "ScientificLinux",
     "synology": "Synology",
@@ -1846,6 +1879,7 @@ _OS_FAMILY_MAP = {
     "CloudLinux": "RedHat",
     "Virtuozzo": "RedHat",
     "AlmaLinux": "RedHat",
+    "AlmaLinux Kitten": "RedHat",
     "OVS": "RedHat",
     "OEL": "RedHat",
     "XCP": "RedHat",
@@ -1870,6 +1904,7 @@ _OS_FAMILY_MAP = {
     "SLES_SAP": "Suse",
     "Arch ARM": "Arch",
     "Manjaro": "Arch",
+    "Manjaro ARM": "Arch",
     "Antergos": "Arch",
     "EndeavourOS": "Arch",
     "ALT": "RedHat",
@@ -1901,6 +1936,7 @@ _OS_FAMILY_MAP = {
     "Alinux": "RedHat",
     "Mendel": "Debian",
     "OSMC": "Debian",
+    "openEuler": "RedHat",
 }
 
 
@@ -2227,6 +2263,11 @@ def _linux_distribution_data():
 
     log.trace("Getting OS name, release, and codename from freedesktop_os_release")
     try:
+        # If using platform.freedesktop_os_release we must invalidate
+        # the internal platform os_release cache to allow grains to be
+        # actually recalculated during grains_refresh
+        if hasattr(platform, "_os_release_cache"):
+            platform._os_release_cache = None
         os_release = _freedesktop_os_release()
         grains.update(_os_release_to_grains(os_release))
 
@@ -2438,6 +2479,18 @@ def _legacy_linux_distribution_data(grains, os_release, lsb_has_error):
         grains["oscodename"] = oscodename
     if "os" not in grains:
         grains["os"] = _derive_os_grain(grains["osfullname"])
+    if "SUSE_SUPPORT_PRODUCT" in os_release and "SUSE_SUPPORT_PRODUCT_VERSION":
+        # It's a workaround for very specific case of SL Micro 6.2
+        # SL Micro 6.2 is different than prevoius ones and identifies itself
+        # as SLES-16, but transactional. This workaround was made to make the grains
+        # of SL Micro 6.2 aligned with the previous versions.
+        grains["oscodename"] = os_release.get(
+            "SUSE_PRETTY_NAME",
+            f"{os_release['SUSE_SUPPORT_PRODUCT']} {os_release['SUSE_SUPPORT_PRODUCT_VERSION']}",
+        )
+        grains["osrelease"] = os_release["SUSE_SUPPORT_PRODUCT_VERSION"]
+        if os_release["SUSE_SUPPORT_PRODUCT"] == "SUSE Linux Micro":
+            grains["osfullname"] = "SL-Micro"
     # this assigns family names based on the os name
     # family defaults to the os name if not found
     grains["os_family"] = _OS_FAMILY_MAP.get(grains["os"], grains["os"])
@@ -2492,13 +2545,21 @@ def _osrelease_data(os, osfullname, osrelease):
             grains["osrelease_info"],
         )
 
-    if os in ("Debian", "FreeBSD", "OpenBSD", "NetBSD", "Mac", "Raspbian"):
+    if os in (
+        "Debian",
+        "FreeBSD",
+        "OpenBSD",
+        "NetBSD",
+        "Mac",
+        "Raspbian",
+        "AlmaLinux",
+    ):
         os_name = os
     else:
         os_name = osfullname
     grains["osfinger"] = "{}-{}".format(
         os_name,
-        osrelease if os in ("Ubuntu", "Pop") else grains["osrelease_info"][0],
+        osrelease if os in ("Ubuntu", "Pop", "NixOS") else grains["osrelease_info"][0],
     )
 
     return grains
@@ -2518,10 +2579,31 @@ def _systemd():
     """
     Return the systemd grain
     """
-    systemd_info = __salt__["cmd.run"]("systemctl --version").splitlines()
+    systemd_version = "UNDEFINED"
+    systemd_features = ""
+    try:
+        systemd_output = __salt__["cmd.run_all"]("systemctl --version")
+    except Exception:  # pylint: disable=broad-except
+        log.error("Exception while executing `systemctl --version`", exc_info=True)
+        return {
+            "version": systemd_version,
+            "features": systemd_features,
+        }
+    if systemd_output.get("retcode") == 0:
+        systemd_info = systemd_output.get("stdout", "").splitlines()
+        try:
+            if systemd_info[0].startswith("systemd "):
+                systemd_version = systemd_info[0].split()[1]
+                systemd_features = systemd_info[1]
+        except IndexError:
+            pass
+    if systemd_version == "UNDEFINED" or systemd_features == "":
+        log.error(
+            "Unexpected output returned by `systemctl --version`: %s", systemd_output
+        )
     return {
-        "version": systemd_info[0].split()[1],
-        "features": systemd_info[1],
+        "version": systemd_version,
+        "features": systemd_features,
     }
 
 
@@ -2656,6 +2738,7 @@ def os_data():
             osrelease_info[1] = osrelease_info[1].lstrip("R")
         else:
             osrelease_info = grains["osrelease"].split(".")
+        osrelease_info = [s for s in osrelease_info if s]
 
         for idx, value in enumerate(osrelease_info):
             if not value.isdigit():
@@ -2737,11 +2820,13 @@ def os_data():
             # freebsd-version was introduced in 10.0.
             # derive osrelease from kernelversion prior to that
             grains["osrelease"] = grains["kernelrelease"].split("-")[0]
+        grains["osfullname"] = "{} {}".format(grains["kernel"], grains["osrelease"])
         grains.update(_bsd_cpudata(grains))
     elif grains["kernel"] in ("OpenBSD", "NetBSD"):
         grains["os_family"] = grains["os"] = grains["kernel"]
         grains.update(_bsd_cpudata(grains))
         grains["osrelease"] = grains["kernelrelease"].split("-")[0]
+        grains["osfullname"] = "{} {}".format(grains["kernel"], grains["osrelease"])
         if grains["kernel"] == "NetBSD":
             grains.update(_netbsd_gpu_data())
     else:

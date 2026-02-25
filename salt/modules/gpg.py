@@ -23,6 +23,7 @@ Sign, encrypt, sign plus encrypt and verify text and files.
 import functools
 import logging
 import os
+import pathlib
 import re
 import time
 
@@ -37,9 +38,17 @@ from salt.exceptions import SaltInvocationError
 
 log = logging.getLogger(__name__)
 
-# Define the module's virtual name
+try:
+    import gnupg
+
+    HAS_GPG_BINDINGS = True
+except ImportError:
+    HAS_GPG_BINDINGS = False
+
+
 __virtualname__ = "gpg"
 
+# Map of letters indicating key validity to pretty string (for display)
 LETTER_TRUST_DICT = immutabletypes.freeze(
     {
         "e": "Expired",
@@ -53,6 +62,22 @@ LETTER_TRUST_DICT = immutabletypes.freeze(
     }
 )
 
+
+# Map of allowed `trust_level` param values in `trust_key`
+# to trust parameter for python-gnupg trust_keys (to manage owner trust)
+TRUST_KEYS_TRUST_LEVELS = immutabletypes.freeze(
+    {
+        "expired": "TRUST_EXPIRED",
+        "unknown": "TRUST_UNDEFINED",
+        "not_trusted": "TRUST_NEVER",
+        "marginally": "TRUST_MARGINAL",
+        "fully": "TRUST_FULLY",
+        "ultimately": "TRUST_ULTIMATE",
+    }
+)
+
+# Map of allowed `trust_level` param values in `trust_key`
+# to owner trust numeric values
 NUM_TRUST_DICT = immutabletypes.freeze(
     {
         "expired": "1",
@@ -64,6 +89,7 @@ NUM_TRUST_DICT = immutabletypes.freeze(
     }
 )
 
+# Map of owner trust numeric values to pretty string (for display)
 INV_NUM_TRUST_DICT = immutabletypes.freeze(
     {
         "1": "Expired",
@@ -75,35 +101,32 @@ INV_NUM_TRUST_DICT = immutabletypes.freeze(
     }
 )
 
-VERIFY_TRUST_LEVELS = immutabletypes.freeze(
-    {
-        "0": "Undefined",
-        "1": "Never",
-        "2": "Marginal",
-        "3": "Fully",
-        "4": "Ultimate",
-    }
-)
-
-TRUST_KEYS_TRUST_LEVELS = immutabletypes.freeze(
-    {
-        "expired": "TRUST_EXPIRED",
-        "unknown": "TRUST_UNDEFINED",
-        "never": "TRUST_NEVER",
-        "marginally": "TRUST_MARGINAL",
-        "fully": "TRUST_FULLY",
-        "ultimately": "TRUST_ULTIMATE",
-    }
-)
+# Map of signature validity numeric values to pretty string (for display)
+if not HAS_GPG_BINDINGS:
+    VERIFY_TRUST_LEVELS = {}
+elif salt.utils.versions.version_cmp(gnupg.__version__, "0.5.1") >= 0:
+    VERIFY_TRUST_LEVELS = immutabletypes.freeze(
+        {
+            "0": "Expired",
+            "1": "Undefined",
+            "2": "Never",
+            "3": "Marginal",
+            "4": "Fully",
+            "5": "Ultimate",
+        }
+    )
+else:
+    VERIFY_TRUST_LEVELS = immutabletypes.freeze(
+        {
+            "0": "Undefined",
+            "1": "Never",
+            "2": "Marginal",
+            "3": "Fully",
+            "4": "Ultimate",
+        }
+    )
 
 _DEFAULT_KEY_SERVER = "keys.openpgp.org"
-
-try:
-    import gnupg
-
-    HAS_GPG_BINDINGS = True
-except ImportError:
-    HAS_GPG_BINDINGS = False
 
 
 def _gpg():
@@ -237,6 +260,43 @@ def _restore_ownership(func):
     return func_wrapper
 
 
+def _homedir_fix(path):
+    """
+    Some versions of git for windows fail to properly honor gpg home directories.
+
+    When we set the gnupghome directory using a normal windows path it wll end
+    up getting appended to the 'git bash' style path. Resulting in something like this:
+
+    /c/Users/salt/C:\\\\Users\\\\other
+
+    For example this happens on 2.51.0.windows.2. This method provides a work
+    around for the issue. First we detect that we're using a git for windows
+    version of gpg.exe instead of Gpg4win. Gpg4win doesn't suffer from this
+    issue. Then we translate the windows style path a 'git bash' style path.
+
+    Example:
+
+    c:\\Users\\other => /c/Users/other
+
+    Note python-gunpg's GPG class must still be instantiated with the windows style path.
+
+    Using with python-gnupg
+
+    import gnupg
+    home = "C:\\Users\\Daniel\"
+    gpg = gnupg.GPG(gnupghome=home)
+    gpg.gnupghome = _homedir_fix(home)
+    """
+    if salt.utils.platform.is_windows():
+        binloc = salt.utils.path.which_bin("gpg")
+        if "Git" in binloc:
+            log.debug("Apply homedir fix for git's gpg: %s", binloc)
+            _path = pathlib.Path(path)
+            drivepart = _path.drive.replace(":", "").lower()
+            return "/" + _path.as_posix().replace(_path.drive, drivepart)
+    return str(path)
+
+
 def _create_gpg(user=None, gnupghome=None, keyring=None):
     """
     Create the GPG object
@@ -256,7 +316,7 @@ def _create_gpg(user=None, gnupghome=None, keyring=None):
             raise
         _create_gnupghome(user, gnupghome)
         gpg = gnupg.GPG(gnupghome=gnupghome, keyring=keyring)
-
+    gpg.gnupghome = _homedir_fix(gnupghome)
     return gpg
 
 

@@ -34,7 +34,8 @@ following Salt runners are called:
 
 Note that a module's default name is its filename
 (i.e. ``foo.py`` becomes module ``foo``), but that its name can be overridden
-by using a :ref:`__virtual__ function <virtual-modules>`.
+by using a :ref:`__virtual__ function <virtual-modules>`. For best practices on
+naming module files, see :ref:`module-naming-best-practices`.
 
 If a Salt module has errors and cannot be imported, the Salt minion will continue
 to load without issue and the module with errors will simply be omitted.
@@ -539,8 +540,6 @@ the module using the following field lists:
 
 .. code-block:: text
 
-    :maintainer:    Thomas Hatch <thatch@saltstack.com, Seth House <shouse@saltstack.com>
-    :maturity:      new
     :depends:       python-mysqldb
     :platform:      all
 

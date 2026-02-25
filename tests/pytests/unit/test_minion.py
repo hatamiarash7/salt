@@ -2,6 +2,10 @@ import asyncio
 import copy
 import logging
 import os
+import pathlib
+import signal
+import time
+import uuid
 
 import pytest
 import tornado
@@ -102,12 +106,15 @@ def test_minion_load_grains_default(minion_opts):
     ],
 )
 def test_send_req_fires_completion_event(event, minion_opts):
+    req_id = uuid.uuid4()
     event_enter = MagicMock()
     event_enter.send.side_effect = event[1]
     event = MagicMock()
     event.__enter__.return_value = event_enter
 
-    with patch("salt.utils.event.get_event", return_value=event):
+    with patch("salt.utils.event.get_event", return_value=event), patch(
+        "uuid.uuid4", return_value=req_id
+    ):
         minion_opts["random_startup_delay"] = 0
         minion_opts["return_retry_tries"] = 30
         minion_opts["grains"] = {}
@@ -132,7 +139,7 @@ def test_send_req_fires_completion_event(event, minion_opts):
                         condition_event_tag = (
                             len(call.args) > 1
                             and call.args[1]
-                            == f"__master_req_channel_payload/{minion_opts['master']}"
+                            == f"__master_req_channel_payload/{req_id}/{minion_opts['master']}"
                         )
                         condition_event_tag_error = (
                             "{} != {}; Call(number={}): {}".format(
@@ -159,26 +166,42 @@ def test_send_req_fires_completion_event(event, minion_opts):
 
 
 async def test_send_req_async_regression_62453(minion_opts):
-    event_enter = MagicMock()
-    event_enter.send.side_effect = (
-        lambda data, tag, cb=None, timeout=60: tornado.gen.maybe_future(True)
-    )
-    event = MagicMock()
-    event.__enter__.return_value = event_enter
+
+    class MockEvent:
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @tornado.gen.coroutine
+        def fire_event_async(self, *args, **kwargs):
+            return
+
+        def get_event(self, *args, **kwargs):
+            return
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return
+
+    def get_event(*args, **kwargs):
+        return MockEvent()
 
     minion_opts["random_startup_delay"] = 0
-    minion_opts["return_retry_tries"] = 30
+    minion_opts["return_retry_tries"] = 5
     minion_opts["grains"] = {}
     minion_opts["ipc_mode"] = "tcp"
     with patch("salt.loader.grains"):
         minion = salt.minion.Minion(minion_opts)
 
         load = {"load": "value"}
-        timeout = 60
+        timeout = 1
 
-        # We are just validating no exception is raised
-        rtn = await minion._send_req_async(load, timeout)
-        assert rtn is False
+        with patch("salt.utils.event.get_event", get_event):
+            # We are just validating no exception is raised
+            with pytest.raises(TimeoutError):
+                rtn = await minion._send_req_async(load, timeout)
 
 
 def test_mine_send_tries(minion_opts):
@@ -495,7 +518,7 @@ async def test_process_count_max(minion_opts, io_loop):
 
 
 @pytest.mark.slow_test
-def test_beacons_before_connect(minion_opts):
+async def test_beacons_before_connect(minion_opts):
     """
     Tests that the 'beacons_before_connect' option causes the beacons to be initialized before connect.
     """
@@ -515,7 +538,7 @@ def test_beacons_before_connect(minion_opts):
         try:
 
             try:
-                minion.tune_in(start=True)
+                await minion.tune_in(start=True)
             except RuntimeError:
                 pass
 
@@ -527,7 +550,7 @@ def test_beacons_before_connect(minion_opts):
 
 
 @pytest.mark.slow_test
-def test_scheduler_before_connect(minion_opts):
+async def test_scheduler_before_connect(minion_opts):
     """
     Tests that the 'scheduler_before_connect' option causes the scheduler to be initialized before connect.
     """
@@ -546,7 +569,7 @@ def test_scheduler_before_connect(minion_opts):
         minion = salt.minion.Minion(minion_opts, io_loop=io_loop)
         try:
             try:
-                minion.tune_in(start=True)
+                await minion.tune_in(start=True)
             except RuntimeError:
                 pass
 
@@ -616,7 +639,7 @@ def test_minion_module_refresh_beacons_refresh(minion_opts):
 
 
 @pytest.mark.slow_test
-def test_when_ping_interval_is_set_the_callback_should_be_added_to_periodic_callbacks(
+async def test_when_ping_interval_is_set_the_callback_should_be_added_to_periodic_callbacks(
     minion_opts,
 ):
     with patch("salt.minion.Minion.ctx", MagicMock(return_value={})), patch(
@@ -635,7 +658,13 @@ def test_when_ping_interval_is_set_the_callback_should_be_added_to_periodic_call
         try:
             try:
                 minion.connected = MagicMock(side_effect=(False, True))
-                minion._fire_master_minion_start = MagicMock()
+
+                # _fire_master_minion_start is now called as a coroutine via create_task
+                # so it must be an async function
+                async def async_mock():
+                    pass
+
+                minion._fire_master_minion_start = async_mock
                 minion.tune_in(start=False)
             except RuntimeError:
                 pass
@@ -811,10 +840,13 @@ def test_minion_manage_beacons(minion_opts):
         "salt.utils.process.SignalHandlingProcess.join",
         MagicMock(return_value=True),
     ):
+        minion = None
         try:
             minion_opts["beacons"] = {}
 
-            io_loop = MagicMock()
+            # io_loop must be a real Tornado IOLoop because our code calls
+            # salt.utils.asynchronous.aioloop() on it
+            io_loop = tornado.ioloop.IOLoop()
 
             mock_functions = {"test.ping": None}
             minion = salt.minion.Minion(minion_opts, io_loop=io_loop)
@@ -830,7 +862,8 @@ def test_minion_manage_beacons(minion_opts):
             assert "ps" in minion.opts["beacons"]
             assert minion.opts["beacons"]["ps"] == bdata
         finally:
-            minion.destroy()
+            if minion is not None:
+                minion.destroy()
 
 
 def test_prep_ip_port():
@@ -1167,3 +1200,141 @@ async def test_connect_master_general_exception_error(minion_opts, connect_maste
     # The first call raised an error which caused minion.destroy to get called,
     # the second call is a success.
     assert minion.connect_master.calls == 2
+
+
+async def test_minion_manager_async_stop(io_loop, minion_opts, tmp_path):
+    """
+    Ensure MinionManager's stop method works correctly and calls the
+    stop_async method
+    """
+    # Setup sock_dir with short path
+    minion_opts["sock_dir"] = str(tmp_path / "sock")
+
+    os.makedirs(minion_opts["sock_dir"])
+
+    # Create a MinionManager instance with a mock minion
+    mm = salt.minion.MinionManager(minion_opts)
+    minion = MagicMock(name="minion")
+    parent_signal_handler = MagicMock(name="parent_signal_handler")
+    mm.minions.append(minion)
+
+    # Set up event publisher and event
+    mm._bind()
+    assert mm.event_publisher is not None
+    assert mm.event is not None
+
+    # Check io_loop is running
+    # mm.io_loop is now an asyncio.AbstractEventLoop (not Tornado IOLoop)
+    assert mm.io_loop.is_running()
+
+    # Wait for the ipc socket to be created, meaning the publish server is listening.
+    while not list(pathlib.Path(minion_opts["sock_dir"]).glob("*")):
+        await tornado.gen.sleep(0.3)
+
+    # Set up values for event to send
+    load = {"key": "value"}
+    ret = {}
+
+    # Connect to minion event bus
+    with salt.utils.event.get_event("minion", opts=minion_opts, listen=True) as event:
+
+        # call stop to start stopping the minion
+        # mm.stop(signal.SIGTERM, parent_signal_handler)
+        mm.stop(signal.SIGTERM, parent_signal_handler)
+
+        # Fire an event and ensure we can still read it back while the minion
+        # is stopping
+        assert await event.fire_event_async(load, "test_event", timeout=1) is not False
+        start = time.monotonic()
+        while time.monotonic() - start < 5:
+            ret = event.get_event(tag="test_event", wait=1)
+            if ret:
+                break
+            await tornado.gen.sleep(0.3)
+    assert "key" in ret
+    assert ret["key"] == "value"
+
+    # Sleep to allow stop_async to complete
+    await tornado.gen.sleep(5)
+
+    # Ensure stop_async has been called
+    minion.destroy.assert_called_once()
+    parent_signal_handler.assert_called_once_with(signal.SIGTERM, None)
+    assert mm.event_publisher is None
+    assert mm.event is None
+
+
+def test_minion_io_loop_is_asyncio_loop(minion_opts):
+    """
+    Test that Minion io_loop is converted to asyncio.AbstractEventLoop.
+    This verifies the salt.utils.asynchronous.aioloop() conversion.
+    """
+    minion = salt.minion.Minion(minion_opts, load_grains=False)
+    try:
+        # Verify io_loop is an asyncio loop, not a Tornado IOLoop
+        assert isinstance(minion.io_loop, asyncio.AbstractEventLoop)
+        # Ensure it has asyncio methods
+        assert hasattr(minion.io_loop, "create_task")
+        assert hasattr(minion.io_loop, "call_soon")
+        # Ensure it doesn't have Tornado-specific methods
+        assert not hasattr(minion.io_loop, "spawn_callback")
+    finally:
+        minion.destroy()
+
+
+def test_minion_io_loop_with_provided_loop(minion_opts):
+    """
+    Test that Minion io_loop conversion works when a loop is provided.
+    """
+    # Create a Tornado IOLoop
+    tornado_loop = tornado.ioloop.IOLoop()
+    try:
+        minion = salt.minion.Minion(
+            minion_opts, io_loop=tornado_loop, load_grains=False
+        )
+        try:
+            # Should still be converted to asyncio loop
+            assert isinstance(minion.io_loop, asyncio.AbstractEventLoop)
+            # Should be the same underlying loop
+            assert minion.io_loop is tornado_loop.asyncio_loop
+        finally:
+            minion.destroy()
+    finally:
+        tornado_loop.close()
+
+
+def test_minion_manager_io_loop_is_asyncio_loop(minion_opts):
+    """
+    Test that MinionManager io_loop is converted to asyncio.AbstractEventLoop.
+    """
+    with patch("salt.utils.process.SignalHandlingProcess.start"):
+        with patch("salt.utils.verify.valid_id"):
+            mm = salt.minion.MinionManager(minion_opts)
+            try:
+                # Verify io_loop is an asyncio loop
+                assert isinstance(mm.io_loop, asyncio.AbstractEventLoop)
+                # Ensure it has asyncio methods
+                assert hasattr(mm.io_loop, "create_task")
+                assert hasattr(mm.io_loop, "call_soon")
+                # Ensure it doesn't have Tornado-specific methods
+                assert not hasattr(mm.io_loop, "spawn_callback")
+            finally:
+                mm.destroy()
+
+
+def test_syndic_manager_io_loop_is_asyncio_loop(minion_opts):
+    """
+    Test that SyndicManager io_loop is converted to asyncio.AbstractEventLoop.
+    """
+    minion_opts["order_masters"] = True
+    sm = salt.minion.SyndicManager(minion_opts)
+    try:
+        # Verify io_loop is an asyncio loop
+        assert isinstance(sm.io_loop, asyncio.AbstractEventLoop)
+        # Ensure it has asyncio methods
+        assert hasattr(sm.io_loop, "create_task")
+        assert hasattr(sm.io_loop, "call_soon")
+        # Ensure it doesn't have Tornado-specific methods
+        assert not hasattr(sm.io_loop, "spawn_callback")
+    finally:
+        sm.destroy()

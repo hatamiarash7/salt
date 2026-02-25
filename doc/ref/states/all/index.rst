@@ -10,6 +10,7 @@ state modules
     :toctree:
     :template: autosummary.rst.tmpl
 
+    alias
     ansiblegate
     apache
     apache_conf
@@ -18,6 +19,7 @@ state modules
     archive
     at
     beacon
+    blockdev
     chocolatey
     cloud
     cmd
@@ -98,6 +100,7 @@ state modules
     service
     ssh_auth
     ssh_known_hosts
+    ssh_pki
     stateconf
     status
     sysctl

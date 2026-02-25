@@ -940,6 +940,18 @@ class DaemonMixIn(metaclass=MixInMeta):
             default=os.path.join(syspaths.PIDFILE_DIR, f"{self.get_prog_name()}.pid"),
             help="Specify the location of the pidfile. Default: '%default'.",
         )
+        self.add_option(
+            "--disable-keepalive",
+            dest="disable_keepalive",
+            default=False,
+            action="store_true",
+            help=(
+                "Disable the automatic restart mechanism. By default, the daemon "
+                "runs in a subprocess with automatic restart capabilities. This "
+                "option disables that behavior and runs the daemon directly. "
+                "Useful when an external process manager like systemd handles restarts."
+            ),
+        )
 
     def _mixin_before_exit(self):
         if hasattr(self, "config") and self.config.get("pidfile"):
@@ -3094,6 +3106,7 @@ class SaltSSHOptionParser(
     ]
 
     def _mixin_setup(self):
+        # pylint: disable=W0106
         self.add_option(
             "-r",
             "--raw",
@@ -3228,6 +3241,16 @@ class SaltSSHOptionParser(
             ),
         )
         self.add_option(
+            "--relenv",
+            dest="relenv",
+            default=False,
+            action="store_true",
+            help=(
+                "Deploy and use a relenv (Salt+Python bundled) environment on the "
+                "SSH target."
+            ),
+        ),
+        self.add_option(
             "--python2-bin",
             default="python2",
             help="Path to a python2 binary which has salt installed.",
@@ -3258,6 +3281,25 @@ class SaltSSHOptionParser(
                 "forwarding definitions will be translated into multiple "
                 "-R parameters."
             ),
+        )
+        ssh_group.add_option(
+            "--disable-keepalive",
+            default=True,
+            action="store_false",
+            dest="ssh_keepalive",
+            help=(
+                "Disable KeepAlive probes (ServerAliveInterval) for the SSH connection."
+            ),
+        )
+        ssh_group.add_option(
+            "--keepalive-interval",
+            dest="ssh_keepalive_interval",
+            help=("Define the value for ServerAliveInterval option."),
+        )
+        ssh_group.add_option(
+            "--keepalive-count-max",
+            dest="ssh_keepalive_count_max",
+            help=("Define the value for ServerAliveCountMax option."),
         )
         ssh_group.add_option(
             "--ssh-option",
@@ -3409,6 +3451,9 @@ class SaltSSHOptionParser(
                     if option.dest == "ssh_passwd":
                         option.explicit = True
                         break
+
+        if self.options.regen_thin and self.options.relenv:
+            self.error("--thin and --relenv are mutually exclusive")
 
     def setup_config(self):
         return config.master_config(self.get_config_file_path())

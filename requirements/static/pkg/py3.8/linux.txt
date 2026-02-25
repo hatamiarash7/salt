@@ -16,8 +16,10 @@ attrs==23.2.0
     # via aiohttp
 autocommand==2.2.2
     # via jaraco.text
-certifi==2023.07.22
-    # via requests
+certifi==2023.07.22 ; python_version < "3.10"
+    # via
+    #   -r requirements/base.txt
+    #   requests
 cffi==1.16.0
     # via cryptography
 charset-normalizer==3.2.0
@@ -30,7 +32,7 @@ contextvars==2.4
     # via -r requirements/base.txt
 croniter==2.0.5 ; sys_platform != "win32"
     # via -r requirements/base.txt
-cryptography==42.0.5
+cryptography==42.0.5 ; python_version < "3.13"
     # via
     #   -r requirements/base.txt
     #   pyopenssl
@@ -79,17 +81,21 @@ more-itertools==9.1.0
     #   cherrypy
     #   jaraco.functools
     #   jaraco.text
-msgpack==1.0.7
+msgpack==1.0.7 ; python_version < "3.13"
     # via -r requirements/base.txt
 multidict==6.0.4
     # via
     #   aiohttp
     #   yarl
+networkx==3.1
+    # via
+    #   -c requirements/constraints.txt
+    #   -r requirements/base.txt
 packaging==23.1
     # via -r requirements/base.txt
 portend==3.1.0
     # via cherrypy
-psutil==5.9.6
+psutil==5.9.6 ; python_version <= "3.9"
     # via -r requirements/base.txt
 pycparser==2.21
     # via cffi
@@ -113,9 +119,9 @@ pytz==2024.1
     #   tempora
 pyyaml==6.0.1
     # via -r requirements/base.txt
-pyzmq==25.1.2
+pyzmq==25.1.2 ; python_version < "3.13"
     # via -r requirements/zeromq.txt
-requests==2.32.3 ; python_version >= "3.8"
+requests==2.31.0 ; python_version < "3.10"
     # via -r requirements/base.txt
 rpm-vercmp==0.1.2 ; sys_platform == "linux"
     # via -r requirements/base.txt

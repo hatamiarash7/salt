@@ -162,8 +162,11 @@ def salt_minion():
     """
     import signal
 
+    import salt.utils.debug
     import salt.utils.platform
     import salt.utils.process
+
+    salt.utils.debug.enable_sigusr1_handler()
 
     salt.utils.process.notify_systemd()
 
@@ -186,7 +189,6 @@ def salt_minion():
         return
 
     if "--disable-keepalive" in sys.argv:
-        sys.argv.remove("--disable-keepalive")
         minion = salt.cli.daemons.Minion()
         minion.start()
         return
@@ -341,7 +343,6 @@ def salt_proxy():
         return
 
     if "--disable-keepalive" in sys.argv:
-        sys.argv.remove("--disable-keepalive")
         proxyminion = salt.cli.daemons.ProxyMinion()
         proxyminion.start()
         return

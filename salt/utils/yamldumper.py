@@ -9,11 +9,12 @@
 
 
 import collections
+from collections import OrderedDict
 
 import yaml  # pylint: disable=blacklisted-import
 
 import salt.utils.context
-from salt.utils.odict import OrderedDict
+from salt.utils.datastructures import HashableOrderedDict
 
 try:
     from yaml import CDumper as Dumper
@@ -71,7 +72,9 @@ def represent_undefined(dumper, data):
 
 
 OrderedDumper.add_representer(OrderedDict, represent_ordereddict)
+OrderedDumper.add_representer(HashableOrderedDict, represent_ordereddict)
 SafeOrderedDumper.add_representer(OrderedDict, represent_ordereddict)
+SafeOrderedDumper.add_representer(HashableOrderedDict, represent_ordereddict)
 SafeOrderedDumper.add_representer(None, represent_undefined)
 
 OrderedDumper.add_representer(

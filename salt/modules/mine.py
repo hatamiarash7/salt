@@ -67,14 +67,6 @@ def _mine_send(load, opts):
 
 
 def _mine_get(load, opts):
-    if opts.get("transport", "") in salt.transport.TRANSPORTS:
-        try:
-            load["tok"] = _auth().gen_token(b"salt")
-        except AttributeError:
-            log.error(
-                "Mine could not authenticate with master. Mine could not be retrieved."
-            )
-            return False
     with salt.channel.client.ReqChannel.factory(opts) as channel:
         return channel.send(load)
 
@@ -301,7 +293,7 @@ def get(tgt, fun, tgt_type="glob", exclude_minion=False):
 
         .. code-block:: jinja
 
-            {% set minion_ips = salt.saltutil.runner('mine.get',
+            {% set minion_ips = salt['saltutil.runner']('mine.get',
                 tgt='*',
                 fun='network.ip_addrs',
                 tgt_type='glob') %}

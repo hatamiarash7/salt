@@ -19,7 +19,7 @@ import salt.utils.vt
 log = logging.getLogger(__name__)
 
 SSH_PASSWORD_PROMPT_RE = re.compile(r"(?:.*)[Pp]assword(?: for .*)?:\s*$", re.M)
-KEY_VALID_RE = re.compile(r".*\(yes\/no\).*")
+KEY_VALID_RE = re.compile(r".*\(yes\/no(/\[fingerprint\])?\).*")
 SSH_PRIVATE_KEY_PASSWORD_PROMPT_RE = re.compile(r"Enter passphrase for key", re.M)
 
 # sudo prompt is used to recognize sudo prompting for a password and should
@@ -90,6 +90,9 @@ class Shell:
         remote_port_forwards=None,
         winrm=False,
         ssh_options=None,
+        keepalive=True,
+        keepalive_interval=None,
+        keepalive_count_max=None,
     ):
         self.opts = opts
         # ssh <ipv6>, but scp [<ipv6>]:/path
@@ -100,6 +103,9 @@ class Shell:
         self.priv = priv
         self.priv_passwd = priv_passwd
         self.timeout = timeout
+        self.keepalive = keepalive
+        self.keepalive_interval = keepalive_interval
+        self.keepalive_count_max = keepalive_count_max
         self.sudo = sudo
         self.tty = tty
         self.mods = mods
@@ -135,6 +141,9 @@ class Shell:
         if self.opts.get("_ssh_version", (0,)) > (4, 9):
             options.append("GSSAPIAuthentication=no")
         options.append(f"ConnectTimeout={self.timeout}")
+        if self.keepalive:
+            options.append(f"ServerAliveInterval={self.keepalive_interval}")
+            options.append(f"ServerAliveCountMax={self.keepalive_count_max}")
         if self.opts.get("ignore_host_keys"):
             options.append("StrictHostKeyChecking=no")
         if self.opts.get("no_host_keys"):
@@ -170,6 +179,9 @@ class Shell:
         if self.opts["_ssh_version"] > (4, 9):
             options.append("GSSAPIAuthentication=no")
         options.append(f"ConnectTimeout={self.timeout}")
+        if self.keepalive:
+            options.append(f"ServerAliveInterval={self.keepalive_interval}")
+            options.append(f"ServerAliveCountMax={self.keepalive_count_max}")
         if self.opts.get("ignore_host_keys"):
             options.append("StrictHostKeyChecking=no")
         if self.opts.get("no_host_keys"):
@@ -384,6 +396,13 @@ class Shell:
             cmd_lst.append(f"/bin/sh {cmd_part}")
         return cmd_lst
 
+    def _sanitize_str(self, text, sanitize_text):
+        """Remove all occurrences of sanitize_text from text"""
+        if not sanitize_text:
+            return text
+        replace_str = "*" * 6
+        return re.sub(r"\b" + re.escape(sanitize_text) + r"\b", replace_str, text)
+
     def _run_cmd(self, cmd, key_accept=False, passwd_retries=3):
         """
         Execute a shell command via VT. This is blocking and assumes that ssh
@@ -415,15 +434,11 @@ class Shell:
             while term.has_unread_data:
                 stdout, stderr = term.recv()
                 if stdout:
-                    if self.passwd:
-                        stdout = stdout.replace(self.passwd, ("*" * 6))
                     ret_stdout += stdout
                     buff = old_stdout + stdout
                 else:
                     buff = stdout
                 if stderr:
-                    if self.passwd:
-                        stderr = stderr.replace(self.passwd, ("*" * 6))
                     ret_stderr += stderr
                 if buff and RSTR_RE.search(buff):
                     # We're getting results back, don't try to send passwords
@@ -456,7 +471,7 @@ class Shell:
                         ret_stdout = (
                             "The host key needs to be accepted, to "
                             "auto accept run salt-ssh with the -i "
-                            "flag:\n{}".format(stdout)
+                            f"flag:\n{self._sanitize_str(stdout, self.passwd)}"
                         )
                         return ret_stdout, "", 254
                 elif buff and SUDO_PROMPT_RE.search(buff):
@@ -489,4 +504,6 @@ class Shell:
                     "VT reported both exitstatus and signalstatus as None. "
                     "This is likely a bug."
                 )
+        ret_stdout = self._sanitize_str(ret_stdout, self.passwd)
+        ret_stderr = self._sanitize_str(ret_stderr, self.passwd)
         return ret_stdout, ret_stderr, ret_status

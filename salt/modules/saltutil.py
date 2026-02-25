@@ -126,8 +126,8 @@ def _sync(form, saltenv=None, extmod_whitelist=None, extmod_blacklist=None):
 def update(version=None):
     """
     Update the salt minion from the URL defined in opts['update_url']
-    VMware, Inc provides the latest builds here:
-    update_url: https://repo.saltproject.io/windows/
+    Broadcom, Inc provides the latest builds here:
+    update_url: https://packages.broadcom.com/artifactory/saltproject-generic/windows/
 
     Be aware that as of 2014-8-11 there's a bug in esky such that only the
     latest version available in the update_url can be downloaded and installed.
@@ -1679,11 +1679,9 @@ def revoke_auth(preserve_minion_cache=False):
         with salt.channel.client.ReqChannel.factory(
             __opts__, master_uri=master
         ) as channel:
-            tok = channel.auth.gen_token(b"salt")
             load = {
                 "cmd": "revoke_auth",
                 "id": __opts__["id"],
-                "tok": tok,
                 "preserve_minion_cache": preserve_minion_cache,
             }
             try:

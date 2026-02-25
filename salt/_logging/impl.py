@@ -1,8 +1,8 @@
 """
-    salt._logging.impl
-    ~~~~~~~~~~~~~~~~~~
+salt._logging.impl
+~~~~~~~~~~~~~~~~~~
 
-    Salt's logging implementation classes/functionality
+Salt's logging implementation classes/functionality
 """
 
 import atexit
@@ -100,6 +100,7 @@ MODNAME_PATTERN = re.compile(r"(?P<name>%%\(name\)(?:\-(?P<digits>[\d]+))?s)")
 
 # Default logging formatting options
 DFLT_LOG_FMT_JID = "[JID: %(jid)s]"
+DFLT_LOG_FMT_MINION_ID = "[%(minion_id)s]"
 DFLT_LOG_DATEFMT = "%H:%M:%S"
 DFLT_LOG_DATEFMT_LOGFILE = "%Y-%m-%d %H:%M:%S"
 DFLT_LOG_FMT_CONSOLE = "[%(levelname)-8s] %(message)s"
@@ -158,6 +159,9 @@ LOGGING_LOGGER_CLASS = logging.getLoggerClass()
 
 
 class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
+
+    ONCECACHE = set()
+
     def __new__(cls, *args):
         """
         We override `__new__` in our logging logger class in order to provide
@@ -234,17 +238,31 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
         stack_info=False,
         stacklevel=1,
         exc_info_on_loglevel=None,
+        once=False,
     ):
+        if once:
+            if str(args) in self.ONCECACHE:
+                return
+            self.ONCECACHE.add(str(args))
+
         if extra is None:
             extra = {}
 
-        current_jid = (
-            salt.utils.ctx.get_request_context().get("data", {}).get("jid", None)
-        )
+        current_jid = salt.utils.ctx.get_request_context().get("data", {}).get("jid")
         log_fmt_jid = (
             salt.utils.ctx.get_request_context()
             .get("opts", {})
             .get("log_fmt_jid", None)
+        )
+
+        current_minion_id = (
+            salt.utils.ctx.get_request_context().get("data", {}).get("id")
+        )
+
+        log_fmt_minion_id = (
+            salt.utils.ctx.get_request_context()
+            .get("opts", {})
+            .get("log_fmt_minion_id")
         )
 
         if current_jid is not None:
@@ -252,6 +270,12 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
 
         if log_fmt_jid is not None:
             extra["log_fmt_jid"] = log_fmt_jid
+
+        if current_minion_id is not None:
+            extra["minion_id"] = current_minion_id
+
+        if log_fmt_minion_id is not None:
+            extra["log_fmt_minion_id"] = log_fmt_minion_id
 
         # If both exc_info and exc_info_on_loglevel are both passed, let's fail
         if exc_info and exc_info_on_loglevel:
@@ -270,10 +294,15 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
                         exc_info_on_loglevel
                     )
                 )
+        # XXX: extra is never None
         if extra is None:
             extra = {"exc_info_on_loglevel": exc_info_on_loglevel}
         else:
             extra["exc_info_on_loglevel"] = exc_info_on_loglevel
+
+        # this is required for log lines to work as expected because we are
+        # adding a stackframe with this function
+        stacklevel = stacklevel + 1
 
         try:
             LOGGING_LOGGER_CLASS._log(
@@ -289,6 +318,8 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
         except TypeError:
             # Python < 3.8 - We still need this for salt-ssh since it will use
             # the system python, and not out onedir.
+            # stacklevel was introduced in Py 3.8
+            # must be running on old OS with Python 3.6 or 3.7
             LOGGING_LOGGER_CLASS._log(
                 self,
                 level,
@@ -319,6 +350,11 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
         if jid:
             log_fmt_jid = extra.pop("log_fmt_jid")
             jid = log_fmt_jid % {"jid": jid}
+
+        minion_id = extra.pop("minion_id", "")
+        if minion_id:
+            log_fmt_minion_id = extra.pop("log_fmt_minion_id")
+            minion_id = log_fmt_minion_id % {"minion_id": minion_id}
 
         if not extra:
             # If nothing else is in extra, make it None
@@ -369,6 +405,7 @@ class SaltLoggingClass(LOGGING_LOGGER_CLASS, metaclass=LoggingMixinMeta):
 
         logrecord.exc_info_on_loglevel = exc_info_on_loglevel
         logrecord.jid = jid
+        logrecord.minion_id = minion_id
         return logrecord
 
 
@@ -541,6 +578,13 @@ if logging.getLoggerClass() is not SaltLoggingClass:
         #   No handlers could be found for logger 'foo'
         setup_temp_handler()
         logging.root.addHandler(get_temp_handler())
+
+
+# Override asyncio logger class if asyncio is already imported
+if "asyncio" in sys.modules:
+    asyncio_logger = logging.getLogger("asyncio")
+    if not isinstance(asyncio_logger, SaltLoggingClass):
+        asyncio_logger.__class__ = SaltLoggingClass
 
 
 # Now that we defined the default logging logger class, we can instantiate our logger

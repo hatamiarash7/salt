@@ -16,6 +16,7 @@ import _pytest.logging
 import _pytest.skipping
 import more_itertools
 import pytest
+import pytestskipmarkers
 
 import salt
 import salt._logging
@@ -426,7 +427,8 @@ def pytest_itemcollected(item):
             pytest.fail(
                 "The test {!r} appears to be written for pytest but it's not under"
                 " {!r}. Please move it there.".format(
-                    item.nodeid, str(PYTESTS_DIR.relative_to(CODE_DIR)), pytrace=False
+                    item.nodeid,
+                    str(PYTESTS_DIR.relative_to(CODE_DIR)),
                 )
             )
 
@@ -801,6 +803,12 @@ def salt_factories_default_root_dir(salt_factories_default_root_dir):
         dictionary, then that's the value used, and not the one returned by
         this fixture.
     """
+    if os.environ.get("CI") and pytestskipmarkers.utils.platform.is_windows():
+        tempdir = pathlib.Path(
+            os.environ.get("RUNNER_TEMP", r"C:\Windows\Temp")
+        ).resolve()
+        return tempdir / "stsuite"
+
     return salt_factories_default_root_dir / "stsuite"
 
 
@@ -989,7 +997,7 @@ def salt_syndic_master_factory(
     config_defaults["transport"] = request.config.getoption("--transport")
 
     config_overrides = {
-        "log_level_logfile": "quiet",
+        "log_level_logfile": "info",
         "fips_mode": FIPS_TESTRUN,
         "publish_signing_algorithm": (
             "PKCS1v15-SHA224" if FIPS_TESTRUN else "PKCS1v15-SHA1"
@@ -1070,7 +1078,7 @@ def salt_syndic_factory(salt_factories, salt_syndic_master_factory):
         opts["aliases.file"] = os.path.join(RUNTIME_VARS.TMP, "aliases")
         opts["transport"] = salt_syndic_master_factory.config["transport"]
         config_defaults["syndic"] = opts
-    config_overrides = {"log_level_logfile": "quiet"}
+    config_overrides = {"log_level_logfile": "info"}
     factory = salt_syndic_master_factory.salt_syndic_daemon(
         "syndic",
         defaults=config_defaults,
@@ -1108,7 +1116,7 @@ def salt_master_factory(
     config_defaults["transport"] = salt_syndic_master_factory.config["transport"]
 
     config_overrides = {
-        "log_level_logfile": "quiet",
+        "log_level_logfile": "info",
         "fips_mode": FIPS_TESTRUN,
         "publish_signing_algorithm": (
             "PKCS1v15-SHA224" if FIPS_TESTRUN else "PKCS1v15-SHA1"
@@ -1218,7 +1226,7 @@ def salt_minion_factory(salt_master_factory):
     config_defaults["transport"] = salt_master_factory.config["transport"]
 
     config_overrides = {
-        "log_level_logfile": "quiet",
+        "log_level_logfile": "info",
         "file_roots": salt_master_factory.config["file_roots"].copy(),
         "pillar_roots": salt_master_factory.config["pillar_roots"].copy(),
         "fips_mode": FIPS_TESTRUN,
@@ -1252,7 +1260,7 @@ def salt_sub_minion_factory(salt_master_factory):
     config_defaults["transport"] = salt_master_factory.config["transport"]
 
     config_overrides = {
-        "log_level_logfile": "quiet",
+        "log_level_logfile": "info",
         "file_roots": salt_master_factory.config["file_roots"].copy(),
         "pillar_roots": salt_master_factory.config["pillar_roots"].copy(),
         "fips_mode": FIPS_TESTRUN,
@@ -1389,6 +1397,8 @@ def sshd_server(salt_factories, sshd_config_dir, salt_master, grains):
         "/usr/lib/ssh/sftp-server",
         # Photon OS 5
         "/usr/libexec/sftp-server",
+        # openSUSE Tumbleweed and SL Micro 6.0
+        "/usr/libexec/ssh/sftp-server",
     ]
     sftp_server_path = None
     for path in sftp_server_paths:

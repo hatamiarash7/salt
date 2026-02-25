@@ -37,6 +37,7 @@ from salt._logging import (
     DFLT_LOG_FMT_CONSOLE,
     DFLT_LOG_FMT_JID,
     DFLT_LOG_FMT_LOGFILE,
+    DFLT_LOG_FMT_MINION_ID,
 )
 
 try:
@@ -162,7 +163,7 @@ VALID_OPTS = immutabletypes.freeze(
         "always_verify_signature": bool,
         # The name of the file in the masters pki-directory that holds the pre-calculated signature of
         # the masters public-key
-        "master_pubkey_signature": str,
+        "master_pubkey_signature": (type(None), str),
         # Instead of computing the signature for each auth-reply, use a pre-calculated signature.
         # The master_pubkey_signature must also be set for this.
         "master_use_pubkey_signature": bool,
@@ -196,6 +197,8 @@ VALID_OPTS = immutabletypes.freeze(
         # to define where minion keys and the cluster private key will be
         # stored.
         "cluster_pki_dir": str,
+        # The port required to be open for a master cluster to properly function
+        "cluster_pool_port": int,
         # Use a module function to determine the unique identifier. If this is
         # set and 'id' is not set, it will allow invocation of a module function
         # to determine the value of 'id'. For simple invocations without function
@@ -348,6 +351,10 @@ VALID_OPTS = immutabletypes.freeze(
         "log_fmt_console": str,
         # The format for a given log file
         "log_fmt_logfile": (tuple, str),
+        # The format for JIDs prior to formatting into log lines as %(jid)s
+        "log_fmt_jid": (type(None), str),
+        # The format for minion_ids prior to formatting into log lines as %(minion_id)s
+        "log_fmt_minion_id": (type(None), str),
         # A dictionary of logging levels
         "log_granular_levels": dict,
         # The maximum number of bytes a single log file may contain before
@@ -451,6 +458,8 @@ VALID_OPTS = immutabletypes.freeze(
         "return_retry_timer_max": int,
         # Configures amount of return retries
         "return_retry_tries": int,
+        # Configures amount of retries for Syndic to Master of Masters
+        "syndic_retries": int,
         # Specify one or more returners in which all events will be sent to. Requires that the returners
         # in question have an event_return(event) function!
         "event_return": (list, str),
@@ -573,6 +582,7 @@ VALID_OPTS = immutabletypes.freeze(
         "git_pillar_refspecs": list,
         "git_pillar_includes": bool,
         "git_pillar_verify_config": bool,
+        "git_pillar_proxy": str,
         # NOTE: gitfs_base, gitfs_fallback, gitfs_mountpoint, and gitfs_root omitted
         # here because their values could conceivably be loaded as non-string types,
         # which is OK because gitfs will normalize them to strings. But rather than
@@ -590,6 +600,7 @@ VALID_OPTS = immutabletypes.freeze(
         "gitfs_ref_types": list,
         "gitfs_refspecs": list,
         "gitfs_disable_saltenv_mapping": bool,
+        "gitfs_proxy": str,
         "hgfs_remotes": list,
         "hgfs_mountpoint": str,
         "hgfs_root": str,
@@ -759,6 +770,7 @@ VALID_OPTS = immutabletypes.freeze(
         "winrepo_remotes": list,
         "winrepo_remotes_ng": list,
         "winrepo_ssl_verify": bool,
+        "winrepo_proxy": str,
         "winrepo_user": str,
         "winrepo_password": str,
         "winrepo_insecure_auth": bool,
@@ -834,6 +846,9 @@ VALID_OPTS = immutabletypes.freeze(
         "ssh_scan_ports": str,
         "ssh_scan_timeout": float,
         "ssh_identities_only": bool,
+        "ssh_keepalive": bool,
+        "ssh_keepalive_interval": int,
+        "ssh_keepalive_count_max": int,
         "ssh_log_file": str,
         "ssh_config_file": str,
         "ssh_merge_pillar": bool,
@@ -1014,6 +1029,14 @@ VALID_OPTS = immutabletypes.freeze(
         "signing_algorithm": str,
         # Master publish channel signing
         "publish_signing_algorithm": str,
+        # the cache driver to be used to manage keys for both minion and master
+        "keys.cache_driver": (type(None), str),
+        "request_server_ttl": int,
+        "request_server_aes_session": int,
+        # Minimum authentication protocol version to accept from minions
+        "minimum_auth_version": int,
+        # optional cache driver for pillar cache
+        "pillar.cache_driver": (type(None), str),
     }
 )
 
@@ -1139,6 +1162,7 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "git_pillar_passphrase": "",
         "git_pillar_refspecs": _DFLT_REFSPECS,
         "git_pillar_includes": True,
+        "git_pillar_proxy": "",
         "gitfs_remotes": [],
         "gitfs_mountpoint": "",
         "gitfs_root": "",
@@ -1158,6 +1182,7 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "gitfs_ref_types": ["branch", "tag", "sha"],
         "gitfs_refspecs": _DFLT_REFSPECS,
         "gitfs_disable_saltenv_mapping": False,
+        "gitfs_proxy": "",
         "unique_jid": False,
         "hash_type": DEFAULT_HASH_TYPE,
         "optimization_order": [0, 1, 2],
@@ -1199,6 +1224,7 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "log_fmt_console": DFLT_LOG_FMT_CONSOLE,
         "log_fmt_logfile": DFLT_LOG_FMT_LOGFILE,
         "log_fmt_jid": DFLT_LOG_FMT_JID,
+        "log_fmt_minion_id": DFLT_LOG_FMT_MINION_ID,
         "log_granular_levels": {},
         "log_rotate_max_bytes": 0,
         "log_rotate_backup_count": 0,
@@ -1239,6 +1265,7 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "return_retry_timer": 5,
         "return_retry_timer_max": 10,
         "return_retry_tries": 3,
+        "syndic_retries": 3,
         "random_reauth_delay": 10,
         "winrepo_source_dir": "salt://win/repo-ng/",
         "winrepo_dir": os.path.join(salt.syspaths.BASE_FILE_ROOTS_DIR, "win", "repo"),
@@ -1253,6 +1280,7 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "winrepo_branch": "master",
         "winrepo_fallback": "",
         "winrepo_ssl_verify": True,
+        "winrepo_proxy": "",
         "winrepo_user": "",
         "winrepo_password": "",
         "winrepo_insecure_auth": False,
@@ -1323,6 +1351,8 @@ DEFAULT_MINION_OPTS = immutabletypes.freeze(
         "features": {},
         "encryption_algorithm": "OAEP-SHA1",
         "signing_algorithm": "PKCS1v15-SHA1",
+        "keys.cache_driver": "localfs_key",
+        "pillar.cache_driver": None,
     }
 )
 
@@ -1395,6 +1425,7 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "git_pillar_refspecs": _DFLT_REFSPECS,
         "git_pillar_includes": True,
         "git_pillar_verify_config": True,
+        "git_pillar_proxy": "",
         "gitfs_remotes": [],
         "gitfs_mountpoint": "",
         "gitfs_root": "",
@@ -1414,6 +1445,7 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "gitfs_ref_types": ["branch", "tag", "sha"],
         "gitfs_refspecs": _DFLT_REFSPECS,
         "gitfs_disable_saltenv_mapping": False,
+        "gitfs_proxy": "",
         "hgfs_remotes": [],
         "hgfs_mountpoint": "",
         "hgfs_root": "",
@@ -1531,6 +1563,7 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "log_fmt_console": DFLT_LOG_FMT_CONSOLE,
         "log_fmt_logfile": DFLT_LOG_FMT_LOGFILE,
         "log_fmt_jid": DFLT_LOG_FMT_JID,
+        "log_fmt_minion_id": DFLT_LOG_FMT_MINION_ID,
         "log_granular_levels": {},
         "log_rotate_max_bytes": 0,
         "log_rotate_backup_count": 0,
@@ -1582,6 +1615,7 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "winrepo_branch": "master",
         "winrepo_fallback": "",
         "winrepo_ssl_verify": True,
+        "winrepo_proxy": "",
         "winrepo_user": "",
         "winrepo_password": "",
         "winrepo_insecure_auth": False,
@@ -1615,6 +1649,9 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "ssh_scan_ports": "22",
         "ssh_scan_timeout": 0.01,
         "ssh_identities_only": False,
+        "ssh_keepalive": True,
+        "ssh_keepalive_interval": 60,
+        "ssh_keepalive_count_max": 3,
         "ssh_log_file": os.path.join(salt.syspaths.LOGS_DIR, "ssh"),
         "ssh_config_file": os.path.join(salt.syspaths.HOME_DIR, ".ssh", "config"),
         "cluster_mode": False,
@@ -1624,7 +1661,7 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "max_minions": 0,
         "master_sign_key_name": "master_sign",
         "master_sign_pubkey": False,
-        "master_pubkey_signature": "master_pubkey_signature",
+        "master_pubkey_signature": None,
         "master_use_pubkey_signature": False,
         "zmq_filtering": False,
         "zmq_monitor": False,
@@ -1674,8 +1711,14 @@ DEFAULT_MASTER_OPTS = immutabletypes.freeze(
         "cluster_id": None,
         "cluster_peers": [],
         "cluster_pki_dir": None,
+        "cluster_pool_port": 4520,
         "features": {},
         "publish_signing_algorithm": "PKCS1v15-SHA1",
+        "keys.cache_driver": "localfs_key",
+        "request_server_aes_session": 0,
+        "request_server_ttl": 0,
+        "minimum_auth_version": 3,
+        "pillar.cache_driver": None,
     }
 )
 
@@ -1739,6 +1782,7 @@ DEFAULT_CLOUD_OPTS = immutabletypes.freeze(
         "log_fmt_console": DFLT_LOG_FMT_CONSOLE,
         "log_fmt_logfile": DFLT_LOG_FMT_LOGFILE,
         "log_fmt_jid": DFLT_LOG_FMT_JID,
+        "log_fmt_minion_id": DFLT_LOG_FMT_MINION_ID,
         "log_granular_levels": {},
         "log_rotate_max_bytes": 0,
         "log_rotate_backup_count": 0,
@@ -2519,7 +2563,7 @@ def syndic_config(
                 ),
             )
         ),
-        "user": opts.get("syndic_user", opts["user"]),
+        "user": opts.get("syndic_user", master_opts["user"]),
         "sock_dir": os.path.join(
             opts["cachedir"], opts.get("syndic_sock_dir", opts["sock_dir"])
         ),
@@ -2527,6 +2571,7 @@ def syndic_config(
         "cachedir": master_opts["cachedir"],
     }
     opts.update(syndic_opts)
+
     # Prepend root_dir to other paths
     prepend_root_dirs = [
         "pki_dir",
@@ -2551,12 +2596,12 @@ def apply_sdb(opts, sdb_opts=None):
     """
     Recurse for sdb:// links for opts
     """
-    # Late load of SDB to keep CLI light
-    import salt.utils.sdb
-
     if sdb_opts is None:
         sdb_opts = opts
     if isinstance(sdb_opts, str) and sdb_opts.startswith("sdb://"):
+        # Late load of SDB to keep CLI light
+        import salt.utils.sdb
+
         return salt.utils.sdb.sdb_get(sdb_opts, opts)
     elif isinstance(sdb_opts, dict):
         for key, value in sdb_opts.items():
@@ -3899,6 +3944,11 @@ def apply_minion_config(
             f"Please specify one of {','.join(salt.crypt.VALID_SIGNING_ALGORITHMS)}."
         )
 
+    # Store original `cachedir` value, before overriding,
+    # to make overriding more accurate.
+    if "__cachedir" not in opts:
+        opts["__cachedir"] = opts["cachedir"]
+
     return opts
 
 
@@ -4110,7 +4160,7 @@ def apply_master_config(overrides=None, defaults=None):
 
     prepend_root_dir(opts, prepend_root_dirs)
 
-    # When a cluster id is defined, make sure the other nessicery bits a
+    # When a cluster id is defined, make sure the other necessary bits are
     # defined.
     if "cluster_id" not in opts:
         opts["cluster_id"] = None
@@ -4128,7 +4178,7 @@ def apply_master_config(overrides=None, defaults=None):
             log.warning("Cluster peers defined without a cluster_id, ignoring.")
             opts["cluster_peers"] = []
         if opts.get("cluster_pki_dir", None):
-            log.warning("Cluster pki defined without a cluster_id, ignoring.")
+            log.warning("Cluster pki dir defined without a cluster_id, ignoring.")
             opts["cluster_pki_dir"] = None
 
     # Enabling open mode requires that the value be set to True, and

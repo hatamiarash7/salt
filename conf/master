@@ -835,6 +835,11 @@
 #  - git://github.com/saltstack/salt-states.git
 #  - file:///var/git/saltmaster
 #
+# The gitfs_proxy option specifies the URL of the proxy server that will be
+# used for contacting the gitfs backend. It defaults to the empty string, which
+# means that no proxy server will be used.
+#gitfs_proxy: ''
+#
 # The gitfs_ssl_verify option specifies whether to ignore ssl certificate
 # errors when contacting the gitfs backend. You might want to set this to
 # false if you're using a git backend that uses a self-signed certificate but
@@ -970,6 +975,10 @@
 # Path relative to the root of the repository where the git_pillar top file
 # and SLS files are located.
 #git_pillar_root: ''
+
+# Specifies the URL of the proxy server that will be used for contacting the
+# remote repository.
+#git_pillar_proxy: ''
 
 # Specifies whether or not to ignore SSL certificate errors when contacting
 # the remote repository.
@@ -1273,6 +1282,9 @@
 # List of git repositories to include with the local repo:
 #winrepo_remotes_ng:
 #  - 'https://github.com/saltstack/salt-winrepo-ng.git'
+#
+# Proxy server used for contacting the remote repository:
+#winrepo_proxy: ''
 
 
 #####  Windows Software Repo settings - Pre 2015.8 #####
@@ -1357,3 +1369,29 @@
 
 # Set a list of clients to enable in in the API
 #netapi_enable_clients: []
+
+
+#####          Master Cluster Settings          #####
+#####################################################
+# Settings for configuring salt master to work in a cluster configuration behind
+# a load balancer.
+
+# When defined, the master will operate in cluster mode. The master will send
+# the cluster key and id to minions instead of its own key and id. The master
+# will also forward its local event bus to other masters defined by
+# ``cluster_peers``
+#cluster_id: master_cluster
+
+# Defines the other masters in the cluster. Can be IP addresses or hostnames
+#cluster_peers:
+#  - master 2
+#  - master 3
+
+# When ``cluster_pki_dir`` is defined, this sets the location of where this
+# cluster will store its cluster public and private key as well as any minion
+# keys. This setting will default to the value of ``pki_dir``, but should be
+# changed to the filesystem location shared between peers in the cluster.
+#cluster_pki_dir: /my/gluster/share/pki
+
+# The port required to be open for a master cluster to properly function
+#cluster_pool_port: 4520

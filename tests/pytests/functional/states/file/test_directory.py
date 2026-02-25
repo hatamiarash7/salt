@@ -5,6 +5,7 @@ import pytest
 import salt.utils.files
 import salt.utils.path
 import salt.utils.platform
+import salt.utils.win_dacl
 import salt.utils.win_functions
 
 pytestmark = [
@@ -34,11 +35,6 @@ def test_directory_symlink_dry_run(file, tmp_path):
     Ensure that symlinks are followed when file.directory is run with
     test=True
     """
-    if IS_WINDOWS and not os.environ.get("GITHUB_ACTIONS_PIPELINE"):
-        pytest.xfail(
-            "This test fails when running from Jenkins but not on the GitHub "
-            "Actions Pipeline"
-        )
     tmp_dir = tmp_path / "pgdata"
     sym_dir = tmp_path / "pg_data"
 
@@ -57,7 +53,22 @@ def test_directory_symlink_dry_run(file, tmp_path):
     ret = file.directory(
         test=True, name=str(sym_dir), follow_symlinks=True, **extra_kwds
     )
-    assert ret.result is True
+
+    expected = True
+
+    if IS_WINDOWS:
+        # On Windows the result is None because there would have been changes
+        # made to the directory (making Administrator the Owner)
+        # https://docs.saltproject.io/en/latest/ref/states/writing.html#return-data
+        expected = None
+
+    assert ret.result is expected
+
+
+def _kernel_check(lookfor):
+    with salt.utils.files.fopen("/proc/version") as fp:
+        versioninfo = fp.read().lower()
+    return lookfor in versioninfo
 
 
 @pytest.mark.skip_if_not_root
@@ -76,27 +87,22 @@ def test_directory_max_depth(file, tmp_path):
         return salt.utils.files.normalize_mode(oct(name.stat().st_mode & 0o777))
 
     top = tmp_path / "top_dir"
+    top_file = top / "top_file"
     sub = top / "sub_dir"
+    sub_file = sub / "sub_file"
     subsub = sub / "sub_sub_dir"
+    subsub_file = subsub / "subsub_file"
     dirs = [top, sub, subsub]
+    files = [top_file, sub_file, subsub_file]
 
-    initial_mode = "0111"
+    initial_mode = "0110"
     changed_mode = "0555"
 
-    if salt.utils.platform.is_photonos():
-        initial_modes = {
-            0: {sub: "0750", subsub: "0110"},
-            1: {sub: "0110", subsub: "0110"},
-            2: {sub: "0110", subsub: "0110"},
-        }
-    else:
-        initial_modes = {
-            0: {sub: "0755", subsub: "0111"},
-            1: {sub: "0111", subsub: "0111"},
-            2: {sub: "0111", subsub: "0111"},
-        }
+    for folder in dirs:
+        folder.mkdir(mode=int(initial_mode, 8))
 
-    subsub.mkdir(mode=int(initial_mode, 8), exist_ok=True, parents=True)
+    for _file in files:
+        _file.touch(mode=int(initial_mode, 8))
 
     for depth in range(3):
         ret = file.directory(
@@ -108,9 +114,12 @@ def test_directory_max_depth(file, tmp_path):
         assert ret.result is True
         for changed_dir in dirs[0 : depth + 1]:
             assert changed_mode == _get_oct_mode(changed_dir)
+        for changed_file in files[0:depth]:
+            assert changed_mode == _get_oct_mode(changed_file)
         for untouched_dir in dirs[depth + 1 :]:
-            _mode = initial_modes[depth][untouched_dir]
-            assert _mode == _get_oct_mode(untouched_dir)
+            assert initial_mode == _get_oct_mode(untouched_dir)
+        for untouched_file in files[depth:]:
+            assert initial_mode == _get_oct_mode(untouched_file)
 
 
 @pytest.mark.skip_on_windows
@@ -275,6 +284,62 @@ def test_directory_clean_require_in(modules, tmp_path, state_tree):
 
     assert good_file.exists()
     assert wrong_file.exists() is False
+
+
+def test_directory_clean_require_in_good_message(modules, tmp_path, state_tree):
+    """
+    file.directory test with clean=True and require_in file,
+    the comment cannot be "removed": "Removed due to clean"
+    """
+    name = tmp_path / "b-directory"
+    name.mkdir()
+    if IS_WINDOWS:
+        principal = salt.utils.win_functions.get_current_user()
+        salt.utils.win_dacl.set_owner(obj_name=str(name), principal=principal)
+        salt.utils.win_dacl.set_inheritance(obj_name=str(name), enabled=True)
+    dir = name / "one"
+    dir.mkdir()
+    good_file = dir / "good-file"
+    good_file.write_text("good")
+
+    assert good_file.exists()
+    assert good_file.is_file()
+
+    assert name.exists()
+    assert name.is_dir()
+
+    assert dir.exists()
+    assert dir.is_dir()
+
+    sls_contents = """
+    some_dir:
+      file.directory:
+        - name: {name}
+        - clean: true
+    {good_file}:
+      file.managed:
+        - require_in:
+          - file: some_dir
+    """.format(
+        name=name, good_file=good_file
+    )
+
+    with pytest.helpers.temp_file("clean-require-in.sls", sls_contents, state_tree):
+        ret = modules.state.sls("clean-require-in")
+        expected_file = (
+            f"File {good_file} exists with proper permissions. No changes made."
+        )
+        for state_run in ret:
+            if IS_WINDOWS:
+                expected_dir = f"Directory {name} is in the correct state"
+            else:
+                expected_dir = f"The directory {name} is in the correct state"
+            assert dir.exists()
+            assert good_file.exists()
+            assert good_file.read_text() == "good"
+            assert (
+                state_run.comment == expected_file or state_run.comment == expected_dir
+            )
 
 
 def test_directory_clean_require_in_with_id(modules, tmp_path, state_tree):

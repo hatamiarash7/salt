@@ -94,17 +94,17 @@ Using ``aptkey: False`` with ``key_url`` example:
 
 .. code-block:: yaml
 
-    deb [signed-by=/etc/apt/keyrings/salt-archive-keyring.gpg arch=amd64] https://repo.saltproject.io/py3/ubuntu/18.04/amd64/latest bionic main:
+    deb [signed-by=/etc/apt/keyrings/salt-archive-keyring.gpg arch=amd64] https://packages.broadcom.com/artifactory/saltproject-deb/ bionic main:
       pkgrepo.managed:
         - file: /etc/apt/sources.list.d/salt.list
-        - key_url: https://repo.saltproject.io/py3/ubuntu/18.04/amd64/latest/salt-archive-keyring.gpg
+        - key_url: https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public
         - aptkey: False
 
 Using ``aptkey: False`` with ``keyserver`` and ``keyid``:
 
 .. code-block:: yaml
 
-    deb [signed-by=/etc/apt/keyrings/salt-archive-keyring.gpg arch=amd64] https://repo.saltproject.io/py3/ubuntu/18.04/amd64/latest bionic main:
+    deb [signed-by=/etc/apt/keyrings/salt-archive-keyring.gpg arch=amd64] https://packages.broadcom.com/artifactory/saltproject-deb/ bionic main:
       pkgrepo.managed:
         - file: /etc/apt/sources.list.d/salt.list
         - keyserver: keyserver.ubuntu.com
@@ -413,7 +413,8 @@ def managed(name, ppa=None, copr=None, aptkey=True, **kwargs):
             )
             return ret
 
-    repo = name
+    kwargs["name"] = repo = name
+
     if __grains__["os"] in ("Ubuntu", "Mint"):
         if ppa is not None:
             # overload the name/repo value for PPAs cleanly
@@ -437,9 +438,6 @@ def managed(name, ppa=None, copr=None, aptkey=True, **kwargs):
 
         if "humanname" in kwargs:
             kwargs["name"] = kwargs.pop("humanname")
-        if "name" not in kwargs:
-            # Fall back to the repo name if humanname not provided
-            kwargs["name"] = repo
 
         kwargs["enabled"] = (
             not salt.utils.data.is_true(disabled)
@@ -498,7 +496,10 @@ def managed(name, ppa=None, copr=None, aptkey=True, **kwargs):
                     else:
                         break
                 else:
-                    break
+                    if kwarg in ("comps", "key_url"):
+                        break
+                    else:
+                        continue
             elif kwarg in ("comps", "key_url"):
                 if sorted(sanitizedkwargs[kwarg]) != sorted(pre[kwarg]):
                     break
